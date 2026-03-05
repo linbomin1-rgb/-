@@ -409,14 +409,6 @@ const App: React.FC = () => {
               <div className="flex items-center gap-2 md:gap-3 font-bold"><Users size={18} className="md:w-5 md:h-5"/> 会员精细管理</div>
               <div className="flex items-center gap-2 md:gap-3 font-bold"><History size={18} className="md:w-5 md:h-5"/> 资金全量监控</div>
             </div>
-            
-            <div className="mt-8 md:mt-12 p-4 md:p-6 bg-white/10 rounded-xl md:rounded-2xl border border-white/20">
-              <p className="text-[10px] md:text-xs font-black uppercase tracking-widest mb-1 md:mb-2 opacity-60">演示账号</p>
-              <div className="flex justify-between text-xs md:text-sm font-mono">
-                <span>账号: admin</span>
-                <span>密码: admin</span>
-              </div>
-            </div>
           </div>
           <div className="md:w-1/2 p-8 md:p-12 flex flex-col justify-center">
             <h2 className="text-xl md:text-2xl font-black mb-6 md:mb-8 text-slate-800">职员登录</h2>
