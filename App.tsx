@@ -81,8 +81,8 @@ const App: React.FC = () => {
 
   // --- 表单受控状态 (统一所有业务输入) ---
   const [formState, setFormState] = useState<any>({
-    loginUser: '',
-    loginPass: '',
+    loginUser: 'admin',
+    loginPass: 'admin',
     custName: '',
     custPhone: '',
     custRemarks: '',
