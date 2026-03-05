@@ -1,0 +1,7 @@
+{
+  "name": "美业系统（最新版）",
+  "description": "专业美业店务管理系统，包含 AI 经营决策支持、高可靠性预约排班及资金流水监控。",
+  "requestFramePermissions": [
+    "camera"
+  ]
+}
