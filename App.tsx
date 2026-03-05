@@ -16,7 +16,7 @@ import { analyzeBusinessData } from './services/geminiService';
 
 const AVAILABLE_PERMISSIONS = [
   { id: 'dashboard', label: '概览', icon: LayoutDashboard },
-  { id: 'appts', label: '排班', icon: Calendar },
+  { id: 'appts', label: '预约中心', icon: Calendar },
   { id: 'customers', label: '会员', icon: Users },
   { id: 'finance', label: '财务', icon: History },
   { id: 'staff', label: '员工', icon: ShieldCheck },
@@ -42,6 +42,7 @@ const App: React.FC = () => {
   const [viewMode, setViewMode] = useState<'month' | 'day'>('day');
   const [selectedDate, setSelectedDate] = useState(new Date());
   const [searchTerm, setSearchTerm] = useState('');
+  const [apptSearchTerm, setApptSearchTerm] = useState('');
   const [activeFinanceFilter, setActiveFinanceFilter] = useState<'all' | 'cash' | 'recharge' | 'consume'>('all');
   const [financeStartDate, setFinanceStartDate] = useState('');
   const [financeEndDate, setFinanceEndDate] = useState('');
@@ -95,9 +96,10 @@ const App: React.FC = () => {
     apptDate: new Date().toISOString().split('T')[0],
     apptStartTime: '10',
     apptEndTime: '11',
+    custSearch: '',
     staffName: '',
     staffRole: '',
-    staffPass: ''
+    staffPass: '',
   });
 
   const scrollContainerRef = useRef<HTMLDivElement>(null);
@@ -113,6 +115,16 @@ const App: React.FC = () => {
     localStorage.setItem('bp_trans', JSON.stringify(transactions));
     localStorage.setItem('bp_logs', JSON.stringify(logs));
   }, [customers, staff, appointments, transactions, logs]);
+
+  // --- 锁定背景滚动 ---
+  useEffect(() => {
+    if (isModalOpen || revokingLog || selectedAppt) {
+      document.body.style.overflow = 'hidden';
+    } else {
+      document.body.style.overflow = '';
+    }
+    return () => { document.body.style.overflow = ''; };
+  }, [isModalOpen, revokingLog, selectedAppt]);
 
   // --- 统计计算 ---
   const stats = useMemo(() => {
@@ -604,6 +616,9 @@ const App: React.FC = () => {
           {activeTab === 'appts' && (
             <div className="bg-white rounded-3xl md:rounded-[2.5rem] border shadow-sm flex flex-col h-full overflow-hidden animate-in slide-in-from-bottom-8">
               <div className="p-2 md:p-6 border-b flex justify-between items-center bg-slate-50/50 flex-wrap gap-2 md:gap-4">
+                <div className="flex items-center gap-2 bg-white px-3 py-1.5 rounded-xl border shadow-sm w-full md:w-auto md:min-w-[240px]">
+                  <Search size={14} className="text-slate-400"/><input value={apptSearchTerm} onChange={e=>setApptSearchTerm(e.target.value)} placeholder="搜索会员或手机..." className="bg-transparent outline-none w-full text-[10px] md:text-xs font-bold text-slate-900" />
+                </div>
                 <div className="flex bg-slate-200/50 p-1 rounded-lg md:rounded-xl">
                   <button onClick={()=>setViewMode('day')} className={`px-2 py-1 md:px-4 md:py-2 rounded-md md:rounded-lg text-[9px] md:text-xs font-bold transition-all ${viewMode==='day'?'bg-white shadow-sm text-indigo-600':'text-slate-500'}`}>日排班</button>
                   <button onClick={()=>setViewMode('month')} className={`px-2 py-1 md:px-4 md:py-2 rounded-md md:rounded-lg text-[9px] md:text-xs font-bold transition-all ${viewMode==='month'?'bg-white shadow-sm text-indigo-600':'text-slate-500'}`}>月历</button>
@@ -655,7 +670,7 @@ const App: React.FC = () => {
                                 }}
                               ></div>
                             ))}
-                            {appointments.filter(a=>a.staffId===s.id && new Date(a.startTime).toDateString()===selectedDate.toDateString()).map(a=>(
+                            {appointments.filter(a=>a.staffId===s.id && new Date(a.startTime).toDateString()===selectedDate.toDateString() && (!apptSearchTerm || a.customerName.toLowerCase().includes(apptSearchTerm.toLowerCase()))).map(a=>(
                               <div key={a.id} onClick={(e)=>{e.stopPropagation();setSelectedAppt(a);}} className={`absolute top-0.5 bottom-0.5 md:top-1 md:bottom-1 rounded-lg md:rounded-xl p-1.5 md:p-3 shadow-sm md:shadow-md border-l-2 md:border-l-4 overflow-hidden ${a.status==='pending'?'bg-amber-50 border-amber-500':a.status==='confirmed'?'bg-indigo-50 border-indigo-500':a.status==='completed'?'bg-emerald-50 border-emerald-500':'bg-slate-100 border-slate-400 opacity-60'} active:scale-95 transition-transform cursor-pointer`} style={{left:`${((a.startHour-8)/15)*100}%`,width:`${(a.duration/15)*100}%`}}>
                                 <div className="text-[8px] md:text-[10px] font-bold truncate text-slate-800 leading-tight">{a.customerName}</div>
                                 <div className="text-[7px] md:text-[8px] text-slate-500 font-bold truncate uppercase leading-tight">{a.projectName} {a.status === 'cancelled' && '(已取消)'} {a.status === 'completed' && '(已完成)'}</div>
@@ -1084,7 +1099,7 @@ const App: React.FC = () => {
 
             {isModalOpen === 'new_appt' && (
                <div className="space-y-4 md:space-y-6">
-                 <h3 className="text-lg md:text-xl font-black text-slate-800 uppercase text-center tracking-widest">排期调度中心</h3>
+                 <h3 className="text-lg md:text-xl font-black text-slate-800 uppercase text-center tracking-widest">预约中心</h3>
                  <div className="flex p-1 bg-slate-100 rounded-xl md:rounded-2xl">
                     <button onClick={()=>setIsQuickAddCustomer(false)} className={`flex-1 py-2 md:py-3 rounded-lg md:rounded-xl text-[9px] md:text-[10px] font-black uppercase transition-all ${!isQuickAddCustomer?'bg-white shadow-sm text-indigo-600':'text-slate-400'}`}>常客库</button>
                     <button onClick={()=>setIsQuickAddCustomer(true)} className={`flex-1 py-2 md:py-3 rounded-lg md:rounded-xl text-[9px] md:text-[10px] font-black uppercase transition-all ${isQuickAddCustomer?'bg-white shadow-sm text-indigo-600':'text-slate-400'}`}>极速录入</button>
@@ -1097,10 +1112,13 @@ const App: React.FC = () => {
                         <div className="col-span-2"><input value={formState.amount} onChange={e=>setFormState({...formState, amount: e.target.value})} type="number" placeholder="初始充值金额 (选填)" className="w-full p-3 md:p-4 bg-indigo-50/50 rounded-xl md:rounded-2xl font-black text-indigo-600 border-2 border-transparent focus:border-indigo-400 outline-none" /></div>
                       </div>
                     ) : (
-                      <select value={formState.apptCustId} onChange={e=>setFormState({...formState, apptCustId: e.target.value})} className="w-full p-3 md:p-4 bg-slate-50 rounded-xl md:rounded-2xl font-bold text-xs md:text-sm border-2 border-transparent focus:border-indigo-400 outline-none text-slate-900">
-                        <option value="">选择会员...</option>
-                        {customers.map(c=><option key={c.id} value={c.id}>{c.name} ({c.phone})</option>)}
-                      </select>
+                      <div className="space-y-2">
+                        <input value={formState.custSearch || ''} onChange={e=>setFormState({...formState, custSearch: e.target.value})} placeholder="搜索会员姓名或手机号..." className="w-full p-3 md:p-4 bg-slate-50 rounded-xl md:rounded-2xl font-bold text-xs md:text-sm outline-none border-2 border-transparent focus:border-indigo-400 text-slate-900" />
+                        <select value={formState.apptCustId} onChange={e=>setFormState({...formState, apptCustId: e.target.value})} className="w-full p-3 md:p-4 bg-slate-50 rounded-xl md:rounded-2xl font-bold text-xs md:text-sm border-2 border-transparent focus:border-indigo-400 outline-none text-slate-900">
+                          <option value="">选择会员...</option>
+                          {customers.filter(c => !formState.custSearch || c.name.toLowerCase().includes(formState.custSearch.toLowerCase()) || c.phone.includes(formState.custSearch)).map(c=><option key={c.id} value={c.id}>{c.name} ({c.phone})</option>)}
+                        </select>
+                      </div>
                     )}
                     <div className="grid grid-cols-2 gap-3 md:gap-4">
                       <div className="space-y-1">
