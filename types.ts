@@ -17,6 +17,22 @@ export interface Customer {
   balance: number;
   remarks: string;
   createdAt: string;
+  gender?: 'male' | 'female' | 'other';
+  birthday?: string;
+  source?: string;
+  tags?: string[];
+  assignedStaffId?: string; // 负责员工/专属客服
+}
+
+export interface StaffReminder {
+  id: string;
+  type: 'birthday' | 'dormant' | 'custom';
+  content: string;
+  customerId: string;
+  staffId: string;
+  reminderDate: string;
+  status: 'pending' | 'completed';
+  createdAt: string;
 }
 
 export interface Appointment {
@@ -55,7 +71,7 @@ export interface Transaction {
   customerCardId?: string; // If null, it's the default balance
   originalAmount?: number; // Only for consume
   amount: number; // Actual amount deducted/recharged
-  paymentMethod: 'balance' | 'cash' | 'wechat' | 'alipay' | 'promotion_card';
+  paymentMethod: 'balance' | 'cash' | 'wechat' | 'alipay' | 'promotion_card' | 'meituan';
   itemName: string;
   staffId?: string;
   timestamp: string;
