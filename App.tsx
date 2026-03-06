@@ -11,7 +11,7 @@ import {
   Edit3, Download, UserCircle, ReceiptText, Clock, Wallet, Shield, PlusSquare, ChevronDown, Undo2, AlertTriangle, User, Zap, TrendingUp, UserPlus2, Eye, History as HistoryIcon,
   Minimize2, Maximize2, MousePointer2, MessageSquareText
 } from 'lucide-react';
-import { Staff, Customer, Appointment, Transaction, SystemLog, Role } from './types';
+import { Staff, Customer, Appointment, Transaction, SystemLog, Role, Promotion, CustomerCard } from './types';
 import { analyzeBusinessData } from './services/geminiService';
 
 const AVAILABLE_PERMISSIONS = [
@@ -19,6 +19,7 @@ const AVAILABLE_PERMISSIONS = [
   { id: 'appts', label: '预约中心', icon: Calendar },
   { id: 'customers', label: '会员', icon: Users },
   { id: 'finance', label: '财务', icon: History },
+  { id: 'promotions', label: '活动', icon: Sparkles },
   { id: 'staff', label: '员工', icon: ShieldCheck },
   { id: 'logs', label: '日志', icon: Settings },
 ];
@@ -43,6 +44,8 @@ const App: React.FC = () => {
   const [selectedDate, setSelectedDate] = useState(new Date());
   const [searchTerm, setSearchTerm] = useState('');
   const [apptSearchTerm, setApptSearchTerm] = useState('');
+  const [isApptSearchFocused, setIsApptSearchFocused] = useState(false);
+  const [isNewApptSearchFocused, setIsNewApptSearchFocused] = useState(false);
   const [activeFinanceFilter, setActiveFinanceFilter] = useState<'all' | 'cash' | 'recharge' | 'consume'>('all');
   const [financeStartDate, setFinanceStartDate] = useState('');
   const [financeEndDate, setFinanceEndDate] = useState('');
@@ -65,6 +68,14 @@ const App: React.FC = () => {
   });
   const [logs, setLogs] = useState<SystemLog[]>(() => {
     const data = safeParse('bp_logs', '[]');
+    return Array.isArray(data) ? data.filter(Boolean) : [];
+  });
+  const [promotions, setPromotions] = useState<Promotion[]>(() => {
+    const data = safeParse('bp_promotions', '[]');
+    return Array.isArray(data) ? data.filter(Boolean) : [];
+  });
+  const [customerCards, setCustomerCards] = useState<CustomerCard[]>(() => {
+    const data = safeParse('bp_customer_cards', '[]');
     return Array.isArray(data) ? data.filter(Boolean) : [];
   });
   
@@ -100,6 +111,10 @@ const App: React.FC = () => {
     staffName: '',
     staffRole: '',
     staffPass: '',
+    promoName: '',
+    promoDiscount: '',
+    cardPromoId: '',
+    cardAmount: '',
   });
 
   const scrollContainerRef = useRef<HTMLDivElement>(null);
@@ -114,7 +129,9 @@ const App: React.FC = () => {
     localStorage.setItem('bp_appts', JSON.stringify(appointments));
     localStorage.setItem('bp_trans', JSON.stringify(transactions));
     localStorage.setItem('bp_logs', JSON.stringify(logs));
-  }, [customers, staff, appointments, transactions, logs]);
+    localStorage.setItem('bp_promotions', JSON.stringify(promotions));
+    localStorage.setItem('bp_customer_cards', JSON.stringify(customerCards));
+  }, [customers, staff, appointments, transactions, logs, promotions, customerCards]);
 
   // --- 锁定背景滚动 ---
   useEffect(() => {
@@ -240,6 +257,20 @@ const App: React.FC = () => {
   };
 
   // --- 逻辑函数 ---
+  const getAvailableCards = (customerId: string) => {
+    return customerCards
+      .filter(card => card.customerId === customerId && card.balance > 0)
+      .map(card => {
+        const promo = promotions.find(p => p.id === card.promotionId);
+        return {
+          ...card,
+          promotionName: promo?.name || '未知活动',
+          discountRate: promo?.discountRate || 1,
+          displayText: `${promo?.name || '未知活动'} - 余额: ¥${card.balance} (${(promo?.discountRate || 1) * 10}折)`
+        };
+      });
+  };
+
   const addLog = (action: string, detail: string, undoData?: SystemLog['undoData']) => {
     setLogs(prev => [{ id: `LOG-${Date.now()}`, operator: currentUser?.name || '系统', action, detail, timestamp: new Date().toISOString(), undoData, isRevoked: false }, ...prev].slice(0, 100));
   };
@@ -276,6 +307,70 @@ const App: React.FC = () => {
     }
     setIsModalOpen(null);
     setEditingTarget(null);
+  };
+
+  const handleAddPromotion = () => {
+    if (!formState.promoName || !formState.promoDiscount) return alert('请填写完整信息');
+    const discount = parseFloat(formState.promoDiscount);
+    if (isNaN(discount) || discount <= 0 || discount > 1) return alert('折扣必须是 0 到 1 之间的小数');
+    
+    const newPromo: Promotion = {
+      id: Date.now().toString(),
+      name: formState.promoName,
+      discountRate: discount,
+      createdAt: new Date().toISOString()
+    };
+    setPromotions([...promotions, newPromo]);
+    addLog('创建活动', newPromo.name);
+    setFormState({...formState, promoName: '', promoDiscount: ''});
+    setIsModalOpen(null);
+  };
+
+  const handleDeletePromotion = (id: string) => {
+    if (!confirm('确认删除该活动？')) return;
+    const promo = promotions.find(p => p.id === id);
+    if (promo) {
+      setPromotions(promotions.filter(p => p.id !== id));
+      addLog('删除活动', promo.name);
+    }
+  };
+
+  const handleAddCustomerCard = (customerId: string) => {
+    if (!formState.cardPromoId || !formState.cardAmount) return alert('请填写完整信息');
+    const amount = parseFloat(formState.cardAmount);
+    if (isNaN(amount) || amount <= 0) return alert('金额必须大于 0');
+    
+    const promo = promotions.find(p => p.id === formState.cardPromoId);
+    if (!promo) return alert('活动不存在');
+
+    const newCard: CustomerCard = {
+      id: Date.now().toString(),
+      customerId,
+      promotionId: promo.id,
+      balance: amount,
+      createdAt: new Date().toISOString()
+    };
+    
+    setCustomerCards([...customerCards, newCard]);
+    
+    // Create recharge transaction
+    const customer = customers.find(c => c.id === customerId);
+    const newTrans: Transaction = {
+      id: Date.now().toString(),
+      type: 'recharge',
+      customerId,
+      customerName: customer?.name || '未知',
+      amount,
+      paymentMethod: 'wechat', // Default to wechat for simplicity, or add to form
+      itemName: `办理活动卡: ${promo.name}`,
+      staffId: currentUser?.id,
+      timestamp: new Date().toISOString()
+    };
+    setTransactions([...transactions, newTrans]);
+    
+    addLog('办理活动卡', `${customer?.name} - ${promo.name} (¥${amount})`, { type: 'add_customer_card', targetId: newCard.id, amount, secondaryId: newTrans.id });
+    setFormState({...formState, cardPromoId: '', cardAmount: ''});
+    setIsModalOpen(null);
   };
 
   const handleSaveCustomer = () => {
@@ -334,18 +429,48 @@ const App: React.FC = () => {
     setIsModalOpen(null);
   };
 
-  const handleConsume = (custId: string, amountStr: string, itemName: string, method: 'balance' | 'cash', apptId?: string) => {
+  const handleConsume = (custId: string, amountStr: string, itemName: string, method: 'balance' | 'cash' | 'promotion_card', apptId?: string, cardId?: string) => {
     const amount = parseFloat(amountStr);
     if (isNaN(amount) || amount <= 0) return alert('请输入有效的结算金额');
     if (!itemName) return alert('请输入服务项目');
 
     const cust = customers.find(c => c.id === custId);
-    if (method === 'balance' && (cust?.balance || 0) < amount) { alert('余额不足'); return; }
-    if (method === 'balance') setCustomers(prev => prev.map(c => c.id === custId ? { ...c, balance: c.balance - amount } : c));
+    
+    let actualAmount = amount;
+    let originalAmount = amount;
+
+    if (method === 'balance') {
+      if ((cust?.balance || 0) < amount) { alert('余额不足'); return; }
+      setCustomers(prev => prev.map(c => c.id === custId ? { ...c, balance: c.balance - amount } : c));
+    } else if (method === 'promotion_card' && cardId) {
+      const card = customerCards.find(c => c.id === cardId);
+      if (!card) return alert('未找到该活动卡');
+      const promo = promotions.find(p => p.id === card.promotionId);
+      if (!promo) return alert('未找到该活动规则');
+      
+      actualAmount = amount * promo.discountRate;
+      if (card.balance < actualAmount) { alert(`卡内余额不足，需要扣除 ${actualAmount.toFixed(2)}，当前余额 ${card.balance.toFixed(2)}`); return; }
+      
+      setCustomerCards(prev => prev.map(c => c.id === cardId ? { ...c, balance: c.balance - actualAmount } : c));
+    }
+
     const transId = `TRX-${Date.now()}`;
-    setTransactions(prev => [{ id: transId, type: 'consume', customerId: custId, customerName: cust?.name || '未知', amount, paymentMethod: method, itemName, staffId: currentUser?.id, timestamp: new Date().toISOString() }, ...prev]);
+    setTransactions(prev => [{ 
+      id: transId, 
+      type: 'consume', 
+      customerId: custId, 
+      customerName: cust?.name || '未知', 
+      amount: actualAmount, 
+      originalAmount: method === 'promotion_card' ? originalAmount : undefined,
+      customerCardId: cardId,
+      paymentMethod: method, 
+      itemName, 
+      staffId: currentUser?.id, 
+      timestamp: new Date().toISOString() 
+    }, ...prev]);
+    
     if (apptId) setAppointments(prev => prev.map(a => a.id === apptId ? { ...a, status: 'completed' } : a));
-    addLog('消费结算', `${cust?.name} ${itemName} ¥${amount}`, { type: 'consume', targetId: transId, secondaryId: custId, amount, paymentMethod: method, prevStatus: apptId });
+    addLog('消费结算', `${cust?.name} ${itemName} ¥${actualAmount}`, { type: 'consume', targetId: transId, secondaryId: custId, amount: actualAmount, originalAmount, paymentMethod: method, prevStatus: apptId, customerCardId: cardId });
     setIsModalOpen(null);
   };
 
@@ -365,14 +490,18 @@ const App: React.FC = () => {
 
   const handleRevokeConfirm = () => {
     if (!revokingLog || !revokingLog.undoData) return;
-    const { type, targetId, secondaryId, amount, prevStatus, paymentMethod } = revokingLog.undoData;
+    const { type, targetId, secondaryId, amount, prevStatus, paymentMethod, customerCardId } = revokingLog.undoData;
     if (type === 'recharge') {
       setTransactions(prev => prev.filter(t => t.id !== targetId));
       if (secondaryId) setCustomers(prev => prev.map(c => c.id === secondaryId ? { ...c, balance: Math.max(0, c.balance - (amount || 0)) } : c));
     } else if (type === 'consume') {
       setTransactions(prev => prev.filter(t => t.id !== targetId));
       if (secondaryId && paymentMethod === 'balance') setCustomers(prev => prev.map(c => c.id === secondaryId ? { ...c, balance: c.balance + (amount || 0) } : c));
+      if (customerCardId && paymentMethod === 'promotion_card') setCustomerCards(prev => prev.map(c => c.id === customerCardId ? { ...c, balance: c.balance + (amount || 0) } : c));
       if (prevStatus) setAppointments(prev => prev.map(a => a.id === prevStatus ? { ...a, status: 'confirmed' } : a));
+    } else if (type === 'add_customer_card') {
+      setCustomerCards(prev => prev.filter(c => c.id !== targetId));
+      if (secondaryId) setTransactions(prev => prev.filter(t => t.id !== secondaryId)); // Remove the recharge transaction
     }
     setLogs(prev => prev.map(l => l.id === revokingLog.id ? { ...l, isRevoked: true } : l));
     addLog('撤销', revokingLog.action);
@@ -616,8 +745,38 @@ const App: React.FC = () => {
           {activeTab === 'appts' && (
             <div className="bg-white rounded-3xl md:rounded-[2.5rem] border shadow-sm flex flex-col h-full overflow-hidden animate-in slide-in-from-bottom-8">
               <div className="p-2 md:p-6 border-b flex justify-between items-center bg-slate-50/50 flex-wrap gap-2 md:gap-4">
-                <div className="flex items-center gap-2 bg-white px-3 py-1.5 rounded-xl border shadow-sm w-full md:w-auto md:min-w-[240px]">
-                  <Search size={14} className="text-slate-400"/><input value={apptSearchTerm} onChange={e=>setApptSearchTerm(e.target.value)} placeholder="搜索会员或手机..." className="bg-transparent outline-none w-full text-[10px] md:text-xs font-bold text-slate-900" />
+                <div className="relative w-full md:w-auto md:min-w-[240px]">
+                  <div className="flex items-center gap-2 bg-white px-3 py-1.5 rounded-xl border shadow-sm w-full">
+                    <Search size={14} className="text-slate-400"/>
+                    <input 
+                      value={apptSearchTerm} 
+                      onChange={e=>setApptSearchTerm(e.target.value)} 
+                      onFocus={() => setIsApptSearchFocused(true)}
+                      onBlur={() => setTimeout(() => setIsApptSearchFocused(false), 200)}
+                      placeholder="搜索会员或手机..." 
+                      className="bg-transparent outline-none w-full text-[10px] md:text-xs font-bold text-slate-900" 
+                    />
+                  </div>
+                  {isApptSearchFocused && apptSearchTerm && (
+                    <div className="absolute top-full left-0 right-0 mt-1 bg-white border rounded-xl shadow-lg z-50 max-h-48 overflow-y-auto custom-scroll">
+                      {customers.filter(c => c.name.toLowerCase().includes(apptSearchTerm.toLowerCase()) || (c.phone || '').includes(apptSearchTerm)).map(c => (
+                        <div 
+                          key={c.id} 
+                          className="px-3 py-2 hover:bg-indigo-50 cursor-pointer text-[10px] md:text-xs font-bold text-slate-800 flex justify-between items-center border-b last:border-0 border-slate-50"
+                          onClick={() => {
+                            setApptSearchTerm(c.name);
+                            setIsApptSearchFocused(false);
+                          }}
+                        >
+                          <span>{c.name}</span>
+                          <span className="text-[9px] text-slate-400 font-normal">{c.phone}</span>
+                        </div>
+                      ))}
+                      {customers.filter(c => c.name.toLowerCase().includes(apptSearchTerm.toLowerCase()) || (c.phone || '').includes(apptSearchTerm)).length === 0 && (
+                        <div className="px-3 py-3 text-center text-[10px] text-slate-400 italic">未找到匹配的会员</div>
+                      )}
+                    </div>
+                  )}
                 </div>
                 <div className="flex bg-slate-200/50 p-1 rounded-lg md:rounded-xl">
                   <button onClick={()=>setViewMode('day')} className={`px-2 py-1 md:px-4 md:py-2 rounded-md md:rounded-lg text-[9px] md:text-xs font-bold transition-all ${viewMode==='day'?'bg-white shadow-sm text-indigo-600':'text-slate-500'}`}>日排班</button>
@@ -639,47 +798,134 @@ const App: React.FC = () => {
               </div>
               <div className="flex-1 overflow-auto py-2 md:py-4 custom-scroll select-none" ref={scrollContainerRef} onMouseDown={handleMouseDown} onMouseUp={()=>setIsDragging(false)} onMouseLeave={()=>setIsDragging(false)} onMouseMove={onMouseMove} style={{cursor: isDragging ? 'grabbing' : 'default'}}>
                 {viewMode==='day' ? (
-                  <div className="min-w-[1000px] md:min-w-[1200px]">
-                    <div className="flex pr-2 md:pr-4 border-b mb-2 md:mb-4 pb-1">
-                      <div className="w-24 md:w-44 sticky left-0 bg-white z-20"></div>
-                      <div className="flex-1 flex">
-                        {Array.from({length:15}).map((_,i)=><div key={i} className="flex-1 text-center text-[8px] md:text-[9px] font-black text-slate-400 border-r last:border-r-0 uppercase tracking-tighter">{i+8}:00</div>)}
-                      </div>
-                    </div>
-                    {staff.map(s=>(
-                      <div key={s.id} className="flex h-12 md:h-20 border-b border-slate-50 hover:bg-slate-50/50 transition-all group">
-                        <div className="w-24 md:w-44 h-full sticky left-0 bg-white group-hover:bg-slate-50 transition-colors z-20 flex items-center gap-1.5 md:gap-3 pl-1.5 md:pl-4 pr-1.5 md:pr-4 border-r md:border-r-0 shadow-[4px_0_10px_-4px_rgba(0,0,0,0.05)] md:shadow-none">
-                          <div className="w-6 h-6 md:w-10 md:h-10 bg-indigo-50 rounded-md md:rounded-xl flex items-center justify-center font-black text-indigo-600 border text-[9px] md:text-xs shrink-0">{s.avatar}</div>
-                          <div className="truncate"><div className="text-[9px] md:text-xs font-bold text-slate-900 truncate">{s.name}</div><div className="text-[7px] md:text-[9px] text-slate-400 font-bold uppercase truncate">{s.role}</div></div>
+                  <div className="h-full flex flex-col overflow-hidden">
+                    {/* Desktop Horizontal View */}
+                    <div className="hidden md:block min-w-[1200px]">
+                      <div className="flex pr-4 border-b mb-4 pb-1">
+                        <div className="w-44 sticky left-0 bg-white z-20"></div>
+                        <div className="flex-1 flex">
+                          {Array.from({length:15}).map((_,i)=><div key={i} className="flex-1 text-center text-[9px] font-black text-slate-400 border-r last:border-r-0 uppercase tracking-tighter">{i+8}:00</div>)}
                         </div>
-                        <div className="flex-1 flex pr-2 md:pr-4 h-full">
-                          <div className="flex-1 relative h-full flex">
-                            {Array.from({length:15}).map((_,i)=>(
-                              <div 
-                                key={i} 
-                                className="flex-1 border-r border-slate-50 h-full hover:bg-indigo-50/30 cursor-crosshair transition-colors"
-                                onClick={() => {
-                                  setFormState({ 
-                                    ...formState, 
-                                    apptStaffId: s.id, 
-                                    apptStartTime: (i + 8).toString(),
-                                    apptEndTime: (i + 9).toString(),
-                                    apptNote: ''
-                                  });
-                                  setIsModalOpen('new_appt');
-                                }}
-                              ></div>
+                      </div>
+                      {staff.map(s=>(
+                        <div key={s.id} className="flex h-20 border-b border-slate-50 hover:bg-slate-50/50 transition-all group">
+                          <div className="w-44 h-full sticky left-0 bg-white group-hover:bg-slate-50 transition-colors z-20 flex items-center gap-3 pl-4 pr-4 border-r-0 shadow-none">
+                            <div className="w-10 h-10 bg-indigo-50 rounded-xl flex items-center justify-center font-black text-indigo-600 border text-xs shrink-0">{s.avatar}</div>
+                            <div className="truncate"><div className="text-xs font-bold text-slate-900 truncate">{s.name}</div><div className="text-[9px] text-slate-400 font-bold uppercase truncate">{s.role}</div></div>
+                          </div>
+                          <div className="flex-1 flex pr-4 h-full">
+                            <div className="flex-1 relative h-full flex">
+                              {Array.from({length:15}).map((_,i)=>(
+                                <div 
+                                  key={i} 
+                                  className="flex-1 border-r border-slate-50 h-full hover:bg-indigo-50/30 cursor-crosshair transition-colors"
+                                  onClick={() => {
+                                    setFormState({ 
+                                      ...formState, 
+                                      apptStaffId: s.id, 
+                                      apptStartTime: (i + 8).toString(),
+                                      apptEndTime: (i + 9).toString(),
+                                      apptNote: ''
+                                    });
+                                    setIsModalOpen('new_appt');
+                                  }}
+                                ></div>
+                              ))}
+                              {appointments.filter(a=>a.staffId===s.id && new Date(a.startTime).toDateString()===selectedDate.toDateString() && (!apptSearchTerm || a.customerName.toLowerCase().includes(apptSearchTerm.toLowerCase()) || (customers.find(c => c.id === a.customerId)?.phone || '').includes(apptSearchTerm))).map(a=>(
+                                <div key={a.id} onClick={(e)=>{e.stopPropagation();setSelectedAppt(a);}} className={`absolute top-1 bottom-1 rounded-xl p-3 shadow-md border-l-4 overflow-hidden ${a.status==='pending'?'bg-amber-50 border-amber-500':a.status==='confirmed'?'bg-indigo-50 border-indigo-500':a.status==='completed'?'bg-emerald-50 border-emerald-500':'bg-slate-100 border-slate-400 opacity-60'} active:scale-95 transition-transform cursor-pointer flex flex-col hover:z-50 hover:w-auto hover:min-w-[200px] hover:h-auto hover:min-h-full`} style={{left:`${((a.startHour-8)/15)*100}%`,width:`${(a.duration/15)*100}%`, zIndex: 10}}>
+                                  <div className="flex justify-between items-start mb-1 gap-2">
+                                    <div className="text-[10px] font-bold text-slate-800 leading-tight flex flex-wrap items-center gap-1">
+                                      {a.customerName}
+                                      <span className="text-[8px] text-slate-400 font-normal">{customers.find(c => c.id === a.customerId)?.phone}</span>
+                                    </div>
+                                    <div className="text-[8px] text-indigo-600 font-black shrink-0">{a.startHour}:00 - {a.startHour+a.duration}:00</div>
+                                  </div>
+                                  <div className="text-[9px] text-slate-600 font-bold uppercase leading-tight mb-1">{a.projectName}</div>
+                                  {a.note && <div className="text-[8px] text-slate-500 italic border-t border-slate-200/50 pt-1 mt-1">{a.note}</div>}
+                                  <div className="mt-auto pt-1 flex justify-between items-center">
+                                    <span className={`text-[8px] font-black uppercase px-1.5 py-0.5 rounded ${a.status==='pending'?'bg-amber-100 text-amber-700':a.status==='confirmed'?'bg-indigo-100 text-indigo-700':a.status==='completed'?'bg-emerald-100 text-emerald-700':'bg-slate-200 text-slate-600'}`}>
+                                      {a.status==='pending'?'待确认':a.status==='confirmed'?'已确认':a.status==='completed'?'已完成':'已取消'}
+                                    </span>
+                                    <div className="opacity-30">
+                                      {a.status === 'completed' ? <CheckCircle size={12}/> : <Clock size={12}/>}
+                                    </div>
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+
+                    {/* Mobile Vertical View */}
+                    <div className="md:hidden flex flex-col h-full overflow-hidden">
+                      <div className="flex border-b bg-slate-50 sticky top-0 z-20">
+                        <div className="w-12 shrink-0 border-r"></div>
+                        <div className="flex-1 flex overflow-x-auto no-scrollbar">
+                          {staff.map(s => (
+                            <div key={s.id} className="w-24 shrink-0 p-2 text-center border-r last:border-r-0 flex flex-col items-center gap-1">
+                              <div className="w-6 h-6 bg-white rounded-lg flex items-center justify-center font-black text-indigo-600 border text-[8px]">{s.avatar}</div>
+                              <div className="text-[9px] font-bold truncate w-full">{s.name}</div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                      <div className="flex-1 overflow-y-auto relative bg-white">
+                        <div className="flex min-h-full">
+                          {/* Time Column */}
+                          <div className="w-12 shrink-0 bg-slate-50 border-r sticky left-0 z-10">
+                            {Array.from({length:15}).map((_,i) => (
+                              <div key={i} className="h-24 border-b text-[8px] font-black text-slate-400 flex items-center justify-center uppercase">{i+8}:00</div>
                             ))}
-                            {appointments.filter(a=>a.staffId===s.id && new Date(a.startTime).toDateString()===selectedDate.toDateString() && (!apptSearchTerm || a.customerName.toLowerCase().includes(apptSearchTerm.toLowerCase()))).map(a=>(
-                              <div key={a.id} onClick={(e)=>{e.stopPropagation();setSelectedAppt(a);}} className={`absolute top-0.5 bottom-0.5 md:top-1 md:bottom-1 rounded-lg md:rounded-xl p-1.5 md:p-3 shadow-sm md:shadow-md border-l-2 md:border-l-4 overflow-hidden ${a.status==='pending'?'bg-amber-50 border-amber-500':a.status==='confirmed'?'bg-indigo-50 border-indigo-500':a.status==='completed'?'bg-emerald-50 border-emerald-500':'bg-slate-100 border-slate-400 opacity-60'} active:scale-95 transition-transform cursor-pointer`} style={{left:`${((a.startHour-8)/15)*100}%`,width:`${(a.duration/15)*100}%`}}>
-                                <div className="text-[8px] md:text-[10px] font-bold truncate text-slate-800 leading-tight">{a.customerName}</div>
-                                <div className="text-[7px] md:text-[8px] text-slate-500 font-bold truncate uppercase leading-tight">{a.projectName} {a.status === 'cancelled' && '(已取消)'} {a.status === 'completed' && '(已完成)'}</div>
+                          </div>
+                          {/* Staff Columns Grid */}
+                          <div className="flex-1 flex">
+                            {staff.map(s => (
+                              <div key={s.id} className="w-24 shrink-0 relative border-r last:border-r-0">
+                                {Array.from({length:15}).map((_,i) => (
+                                  <div 
+                                    key={i} 
+                                    className="h-24 border-b border-slate-50 w-full hover:bg-indigo-50/30 transition-colors"
+                                    onClick={() => {
+                                      setFormState({ 
+                                        ...formState, 
+                                        apptStaffId: s.id, 
+                                        apptStartTime: (i + 8).toString(),
+                                        apptEndTime: (i + 9).toString(),
+                                        apptNote: ''
+                                      });
+                                      setIsModalOpen('new_appt');
+                                    }}
+                                  ></div>
+                                ))}
+                                {appointments.filter(a=>a.staffId===s.id && new Date(a.startTime).toDateString()===selectedDate.toDateString() && (!apptSearchTerm || a.customerName.toLowerCase().includes(apptSearchTerm.toLowerCase()) || (customers.find(c => c.id === a.customerId)?.phone || '').includes(apptSearchTerm))).map(a => (
+                                  <div 
+                                    key={a.id} 
+                                    onClick={(e)=>{e.stopPropagation();setSelectedAppt(a);}}
+                                    className={`absolute left-0.5 right-0.5 rounded-lg p-1.5 shadow-sm border-l-2 overflow-hidden ${a.status==='pending'?'bg-amber-50 border-amber-500':a.status==='confirmed'?'bg-indigo-50 border-indigo-500':a.status==='completed'?'bg-emerald-50 border-emerald-500':'bg-slate-100 border-slate-400 opacity-60'} active:scale-95 transition-transform cursor-pointer flex flex-col hover:z-50 hover:h-auto hover:min-h-full`}
+                                    style={{top: `${((a.startHour-8)/15)*100}%`, height: `${(a.duration/15)*100}%`, zIndex: 10}}
+                                  >
+                                    <div className="text-[8px] font-bold text-slate-800 leading-tight mb-0.5 flex flex-wrap items-center gap-1">
+                                      {a.customerName}
+                                      <span className="text-[6px] text-slate-400 font-normal">{customers.find(c => c.id === a.customerId)?.phone}</span>
+                                    </div>
+                                    <div className="text-[7px] text-slate-500 font-bold uppercase leading-tight mb-0.5">{a.projectName}</div>
+                                    <div className="text-[6px] text-indigo-600 font-black">{a.startHour}:00-{a.startHour+a.duration}:00</div>
+                                    {a.note && <div className="text-[6px] text-slate-400 italic border-t border-slate-200/50 pt-0.5 mt-0.5">{a.note}</div>}
+                                    <div className="mt-auto pt-0.5 flex justify-between items-center">
+                                      <span className={`text-[6px] font-black uppercase px-1 py-0.5 rounded ${a.status==='pending'?'bg-amber-100 text-amber-700':a.status==='confirmed'?'bg-indigo-100 text-indigo-700':a.status==='completed'?'bg-emerald-100 text-emerald-700':'bg-slate-200 text-slate-600'}`}>
+                                        {a.status==='pending'?'待确认':a.status==='confirmed'?'已确认':a.status==='completed'?'已完成':'已取消'}
+                                      </span>
+                                    </div>
+                                  </div>
+                                ))}
                               </div>
                             ))}
                           </div>
                         </div>
                       </div>
-                    ))}
+                    </div>
                   </div>
                 ) : (
                   <div className="grid grid-cols-7 gap-1.5 md:gap-4 px-2 md:px-4">
@@ -733,6 +979,7 @@ const App: React.FC = () => {
                           <button onClick={(e)=>{e.stopPropagation(); setIsModalOpen(`customer_profile_${c.id}`);}} className="text-[9px] md:text-[10px] font-bold uppercase underline text-slate-400 hover:text-indigo-600">轨迹档案</button>
                           <button onClick={(e)=>{e.stopPropagation(); setFormState({...formState, amount:'', itemName:'', note:''}); setIsModalOpen(`consume_${c.id}`);}} className="text-[9px] md:text-[10px] font-bold uppercase underline text-indigo-600">结算</button>
                           <button onClick={(e)=>{e.stopPropagation(); setFormState({...formState, amount:''}); setIsModalOpen(`recharge_${c.id}`);}} className="text-[9px] md:text-[10px] font-bold uppercase text-slate-400 hover:text-slate-900">充值</button>
+                          <button onClick={(e)=>{e.stopPropagation(); setFormState({...formState, cardPromoId:'', cardAmount:''}); setIsModalOpen(`add_card_${c.id}`);}} className="text-[9px] md:text-[10px] font-bold uppercase text-purple-600 hover:text-purple-800">办卡</button>
                         </td>
                       </tr>
                     ))}
@@ -767,7 +1014,7 @@ const App: React.FC = () => {
           )}
 
           {activeTab === 'finance' && (
-            <div className="space-y-6 animate-in fade-in">
+            <div className="space-y-4 md:space-y-6 animate-in fade-in">
               <div className="bg-white p-4 md:p-6 rounded-2xl md:rounded-[2rem] border shadow-sm flex flex-col md:flex-row gap-3 md:gap-4 items-end">
                 <div className="flex-1 w-full">
                   <label className="block text-[9px] md:text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1 md:mb-2">开始日期</label>
@@ -791,29 +1038,67 @@ const App: React.FC = () => {
                 </div>
               </div>
               <div className="bg-white rounded-2xl md:rounded-[2.5rem] border shadow-sm overflow-hidden overflow-x-auto custom-scroll">
-                <table className="w-full text-left min-w-[700px]">
-                  <thead className="bg-slate-50 text-[10px] font-black text-slate-400 uppercase border-b"><tr className="border-b"><th className="px-4 md:px-8 py-3 md:py-5">单号</th><th className="px-4 md:px-8 py-3 md:py-5">分类</th><th className="px-4 md:px-8 py-3 md:py-5">姓名</th><th className="px-4 md:px-8 py-3 md:py-5">金额</th><th className="px-4 md:px-8 py-3 md:py-5">时间</th><th className="px-4 md:px-8 py-3 md:py-5 text-right">操作</th></tr></thead>
-                  <tbody className="divide-y text-xs md:text-sm">
+                <table className="w-full text-left min-w-full md:min-w-[700px]">
+                  <thead className="bg-slate-50 text-[9px] md:text-[10px] font-black text-slate-400 uppercase border-b"><tr className="border-b"><th className="px-0.5 md:px-6 py-2 md:py-5">单号</th><th className="px-0.5 md:px-6 py-2 md:py-5">分类</th><th className="px-0.5 md:px-6 py-2 md:py-5">姓名</th><th className="px-0.5 md:px-6 py-2 md:py-5">金额</th><th className="px-0.5 md:px-6 py-2 md:py-5">时间</th><th className="px-0.5 md:px-6 py-2 md:py-5 text-right">操作</th></tr></thead>
+                  <tbody className="divide-y text-[10px] md:text-sm">
                     {filteredTransactions.map(t=>(
                       <tr key={t.id} className="hover:bg-slate-50/50 transition-colors">
-                        <td className="px-4 md:px-8 py-3 md:py-5 font-mono text-[9px] text-slate-300 uppercase">{t.id.slice(-6)}</td>
-                        <td className="px-4 md:px-8 py-3 md:py-5">
-                          <span className={`text-[8px] font-black px-2 py-0.5 rounded uppercase ${t.type==='recharge'?'bg-blue-100 text-blue-700':(t.paymentMethod==='balance'?'bg-amber-100 text-amber-700':'bg-indigo-100 text-indigo-700')}`}>
-                            {t.type==='recharge'?'充值':(t.paymentMethod==='balance'?'卡耗':'实收')}
+                        <td className="px-0.5 md:px-6 py-1.5 md:py-5 font-mono text-[8px] md:text-[9px] text-slate-300 uppercase">{t.id.slice(-6)}</td>
+                        <td className="px-0.5 md:px-6 py-1.5 md:py-5">
+                          <span className={`text-[7px] md:text-[8px] font-black px-1 md:px-1.5 py-0.5 rounded uppercase ${t.type==='recharge'?'bg-blue-100 text-blue-700':(t.paymentMethod==='balance'?'bg-amber-100 text-amber-700':t.paymentMethod==='promotion_card'?'bg-purple-100 text-purple-700':'bg-indigo-100 text-indigo-700')}`}>
+                            {t.type==='recharge'?'充值':(t.paymentMethod==='balance'?'卡耗':t.paymentMethod==='promotion_card'?'活动卡':'实收')}
                           </span>
                         </td>
-                        <td className="px-4 md:px-8 py-3 md:py-5 font-bold text-[10px] md:text-xs text-slate-800">{t.customerName || '未知客户'}</td>
-                        <td className={`px-4 md:px-8 py-3 md:py-5 font-black ${t.type==='recharge'?'text-green-600':'text-slate-900'}`}>¥{(t.amount || 0).toLocaleString()}</td>
-                        <td className="px-4 md:px-8 py-3 md:py-5 text-[9px] md:text-[10px] text-slate-400 font-bold">{new Date(t.timestamp).toLocaleString().slice(5,16)}</td>
-                        <td className="px-4 md:px-8 py-3 md:py-5 text-right">
-                          <button onClick={() => handleDeleteTransaction(t.id)} className="p-1.5 md:p-2 text-slate-300 hover:text-red-500 transition-all">
-                            <Trash2 size={14} className="md:w-4 md:h-4" />
+                        <td className="px-0.5 md:px-6 py-1.5 md:py-5 font-bold text-[9px] md:text-xs text-slate-800 truncate max-w-[50px] md:max-w-none">{t.customerName || '未知客户'}</td>
+                        <td className={`px-0.5 md:px-6 py-1.5 md:py-5 font-black text-[9px] md:text-sm ${t.type==='recharge'?'text-green-600':'text-slate-900'}`}>¥{(t.amount || 0).toLocaleString()}</td>
+                        <td className="px-0.5 md:px-6 py-1.5 md:py-5 text-[8px] md:text-[10px] text-slate-400 font-bold whitespace-nowrap">{new Date(t.timestamp).toLocaleString().slice(5,16)}</td>
+                        <td className="px-0.5 md:px-6 py-1.5 md:py-5 text-right">
+                          <button onClick={() => handleDeleteTransaction(t.id)} className="p-1 md:p-2 text-slate-300 hover:text-red-500 transition-all">
+                            <Trash2 size={12} className="md:w-4 md:h-4" />
                           </button>
                         </td>
                       </tr>
                     ))}
                   </tbody>
                 </table>
+              </div>
+            </div>
+          )}
+
+          {activeTab === 'promotions' && (
+            <div className="space-y-4 md:space-y-6 animate-in fade-in">
+              <div className="flex justify-between items-center">
+                <h2 className="text-xl md:text-2xl font-black text-slate-800 tracking-tight">活动管理</h2>
+                <button onClick={() => setIsModalOpen('new_promotion')} className="bg-indigo-600 text-white px-4 md:px-5 py-2 md:py-2.5 rounded-xl font-black text-[10px] md:text-xs uppercase tracking-widest shadow-lg shadow-indigo-200 hover:bg-indigo-700 active:scale-95 transition-all flex items-center gap-1.5 md:gap-2">
+                  <Plus size={16} className="md:w-[18px] md:h-[18px]"/>
+                  <span>新建活动</span>
+                </button>
+              </div>
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 md:gap-6">
+                {promotions.map(promo => (
+                  <div key={promo.id} className="bg-white p-4 md:p-6 rounded-2xl md:rounded-[2rem] border shadow-sm hover:shadow-md transition-shadow relative overflow-hidden group">
+                    <div className="absolute top-0 right-0 w-24 h-24 bg-gradient-to-br from-indigo-50 to-purple-50 rounded-bl-full -z-10 opacity-50"></div>
+                    <div className="flex justify-between items-start mb-4">
+                      <div>
+                        <h3 className="text-lg font-black text-slate-800">{promo.name}</h3>
+                        <p className="text-[10px] text-slate-400 font-bold uppercase mt-1">创建于 {new Date(promo.createdAt).toLocaleDateString()}</p>
+                      </div>
+                      <div className="bg-indigo-100 text-indigo-700 px-3 py-1 rounded-lg font-black text-xs">
+                        {promo.discountRate * 10}折
+                      </div>
+                    </div>
+                    <div className="flex justify-end mt-4 pt-4 border-t border-slate-50">
+                      <button onClick={() => handleDeletePromotion(promo.id)} className="text-slate-300 hover:text-red-500 transition-colors p-2">
+                        <Trash2 size={16} />
+                      </button>
+                    </div>
+                  </div>
+                ))}
+                {promotions.length === 0 && (
+                  <div className="col-span-full py-12 text-center text-slate-400 font-bold text-sm">
+                    暂无活动，点击右上角新建
+                  </div>
+                )}
               </div>
             </div>
           )}
@@ -901,6 +1186,23 @@ const App: React.FC = () => {
               </div>
             )}
 
+            {isModalOpen === 'new_promotion' && (
+              <div className="space-y-4 md:space-y-6">
+                <h3 className="text-lg md:text-xl font-black text-slate-800 uppercase text-center tracking-widest">新建活动</h3>
+                <div className="space-y-3 md:space-y-4">
+                  <div className="space-y-1">
+                    <label className="text-[9px] font-black text-slate-400 uppercase ml-2">活动名称 *</label>
+                    <input value={formState.promoName} onChange={e=>setFormState({...formState, promoName: e.target.value})} placeholder="如：2024双十一特惠" className="w-full p-3 md:p-4 bg-slate-50 rounded-xl md:rounded-2xl font-bold text-xs md:text-sm outline-none border-2 border-transparent focus:border-indigo-400 text-slate-900" />
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-[9px] font-black text-slate-400 uppercase ml-2">折扣率 (0-1之间) *</label>
+                    <input type="number" step="0.01" min="0.01" max="1" value={formState.promoDiscount} onChange={e=>setFormState({...formState, promoDiscount: e.target.value})} placeholder="如：0.8 代表 8折" className="w-full p-3 md:p-4 bg-slate-50 rounded-xl md:rounded-2xl font-bold text-xs md:text-sm outline-none border-2 border-transparent focus:border-indigo-400 text-slate-900" />
+                  </div>
+                </div>
+                <button onClick={handleAddPromotion} className="w-full py-3 md:py-4 bg-indigo-600 text-white rounded-xl md:rounded-2xl font-black text-[10px] md:text-xs uppercase shadow-lg tracking-widest active:scale-95 transition-all">创建活动</button>
+              </div>
+            )}
+
             {/* 会员录入/编辑弹窗 */}
             {isModalOpen === 'new_customer' && (
               <div className="space-y-4 md:space-y-6">
@@ -928,6 +1230,26 @@ const App: React.FC = () => {
                   </div>
                 </div>
                 <button onClick={handleSaveCustomer} className="w-full py-3 md:py-4 bg-slate-900 text-white rounded-xl md:rounded-2xl font-black text-[10px] md:text-xs uppercase shadow-lg tracking-widest active:scale-95 transition-all">{editingTarget && 'phone' in editingTarget ? '保存修改' : '确认录入系统'}</button>
+              </div>
+            )}
+
+            {isModalOpen?.startsWith('add_card_') && (
+              <div className="space-y-4 md:space-y-6">
+                <h3 className="text-lg md:text-xl font-black text-slate-800 uppercase text-center tracking-widest">办理活动卡</h3>
+                <div className="space-y-3 md:space-y-4">
+                  <div className="space-y-1">
+                    <label className="text-[9px] font-black text-slate-400 uppercase ml-2">选择活动 *</label>
+                    <select value={formState.cardPromoId} onChange={e=>setFormState({...formState, cardPromoId: e.target.value})} className="w-full p-3 md:p-4 bg-slate-50 rounded-xl md:rounded-2xl font-bold text-xs md:text-sm outline-none border-2 border-transparent focus:border-indigo-400 text-slate-900">
+                      <option value="">请选择活动...</option>
+                      {promotions.map(p => <option key={p.id} value={p.id}>{p.name} ({p.discountRate * 10}折)</option>)}
+                    </select>
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-[9px] font-black text-slate-400 uppercase ml-2">充值金额 (¥) *</label>
+                    <input type="number" value={formState.cardAmount} onChange={e=>setFormState({...formState, cardAmount: e.target.value})} placeholder="0.00" className="w-full p-3 md:p-4 bg-indigo-50/50 rounded-xl md:rounded-2xl font-black text-indigo-600 border-2 border-transparent focus:border-indigo-400 outline-none" />
+                  </div>
+                </div>
+                <button onClick={() => handleAddCustomerCard(isModalOpen.split('_')[2])} className="w-full py-3 md:py-4 bg-indigo-600 text-white rounded-xl md:rounded-2xl font-black text-[10px] md:text-xs uppercase shadow-lg tracking-widest active:scale-95 transition-all">确认办理</button>
               </div>
             )}
 
@@ -972,6 +1294,9 @@ const App: React.FC = () => {
                      <button onClick={()=>{setFormState({...formState, amount:''}); setIsModalOpen(`recharge_${c.id}`);}} className="p-4 bg-slate-50 rounded-xl font-bold text-slate-700 flex flex-col items-center gap-2 hover:bg-slate-100 active:scale-95 transition-all">
                        <Wallet size={20} className="text-green-500"/> 充值
                      </button>
+                     <button onClick={()=>{setFormState({...formState, cardPromoId:'', cardAmount:''}); setIsModalOpen(`add_card_${c.id}`);}} className="p-4 bg-slate-50 rounded-xl font-bold text-slate-700 flex flex-col items-center gap-2 hover:bg-slate-100 active:scale-95 transition-all col-span-2">
+                       <Sparkles size={20} className="text-purple-500"/> 办卡
+                     </button>
                    </div>
                  </div>
                );
@@ -997,13 +1322,37 @@ const App: React.FC = () => {
                        </div>
                      )}
 
+                     {getAvailableCards(custId).length > 0 && (
+                       <div className="space-y-3 md:space-y-4 pt-3 md:pt-4 border-t">
+                          <h4 className="font-black uppercase tracking-widest text-[9px] md:text-[10px] text-purple-600 flex items-center gap-2"><Sparkles size={12} className="md:w-3.5 md:h-3.5"/> 活动卡包 ({getAvailableCards(custId).length})</h4>
+                          <div className="grid grid-cols-1 gap-2">
+                             {getAvailableCards(custId).map(card => (
+                                <div key={card.id} className="p-3 md:p-4 bg-purple-50 border border-purple-100 rounded-xl md:rounded-2xl flex justify-between items-center text-[10px] md:text-xs">
+                                   <div className="truncate pr-2">
+                                     <p className="font-bold text-purple-900 truncate">{card.displayText.split(' - ')[0]}</p>
+                                     <p className="text-[9px] md:text-[10px] text-purple-500 font-bold mt-0.5">剩余: ¥{card.balance.toLocaleString()}</p>
+                                   </div>
+                                   <div className="bg-purple-200 text-purple-800 px-2 py-1 rounded font-black text-[9px]">
+                                     {card.discountRate * 10}折
+                                   </div>
+                                </div>
+                             ))}
+                          </div>
+                       </div>
+                     )}
+
                      <div className="space-y-3 md:space-y-4 pt-3 md:pt-4 border-t">
                         <h4 className="font-black uppercase tracking-widest text-[9px] md:text-[10px] text-indigo-600 flex items-center gap-2"><HistoryIcon size={12} className="md:w-3.5 md:h-3.5"/> 消费轨迹 ({histTrans.length})</h4>
                         <div className="space-y-2 max-h-48 md:max-h-64 overflow-y-auto custom-scroll pr-1">
                            {histTrans.length > 0 ? histTrans.map(t=>(
                               <div key={t.id} className="p-3 md:p-4 bg-white border border-slate-100 rounded-xl md:rounded-2xl flex justify-between items-center text-[10px] md:text-xs">
                                  <div className="truncate pr-2"><p className="font-bold text-slate-800 truncate">{t.itemName}</p><p className="text-[9px] md:text-[10px] text-slate-300 font-bold">{new Date(t.timestamp).toLocaleDateString()}</p></div>
-                                 <p className={`font-black shrink-0 ${t.type==='recharge'?'text-green-600':'text-slate-900'}`}>{t.type==='recharge'?'+':'-'}¥{t.amount}</p>
+                                 <div className="text-right shrink-0">
+                                   <p className={`font-black ${t.type==='recharge'?'text-green-600':'text-slate-900'}`}>{t.type==='recharge'?'+':'-'}¥{t.amount}</p>
+                                   {t.paymentMethod === 'promotion_card' && t.originalAmount && (
+                                     <p className="text-[8px] text-slate-400 line-through">原价: ¥{t.originalAmount}</p>
+                                   )}
+                                 </div>
                               </div>
                            )) : <p className="text-center py-6 md:py-8 text-slate-300 font-bold italic">暂无流水记录</p>}
                         </div>
@@ -1016,7 +1365,18 @@ const App: React.FC = () => {
                const custId = isModalOpen.split('_')[1];
                const customer = customers.find(c => c.id === custId);
                const amount = parseFloat(formState.amount) || 0;
-               const isInsufficient = amount > (customer?.balance || 0);
+               let isInsufficient = amount > (customer?.balance || 0);
+               let actualAmount = amount;
+               
+               if (formState.cardId) {
+                 const card = customerCards.find(c => c.id === formState.cardId);
+                 const promo = promotions.find(p => p.id === card?.promotionId);
+                 if (card && promo) {
+                   actualAmount = amount * promo.discountRate;
+                   isInsufficient = actualAmount > card.balance;
+                 }
+               }
+               
                const apptId = isModalOpen.split('_')[3];
 
                return (
@@ -1030,12 +1390,14 @@ const App: React.FC = () => {
                       <p className="text-base md:text-lg font-bold text-slate-800">{customer?.name}</p>
                     </div>
                     <div className="text-right">
-                      <p className="text-[9px] font-black uppercase text-slate-400 mb-1">当前余额</p>
-                      <p className={`text-base md:text-lg font-black ${isInsufficient ? 'text-red-500' : 'text-indigo-600'}`}>¥{(customer?.balance || 0).toLocaleString()}</p>
+                      <p className="text-[9px] font-black uppercase text-slate-400 mb-1">{formState.cardId ? '活动卡余额' : '当前余额'}</p>
+                      <p className={`text-base md:text-lg font-black ${isInsufficient ? 'text-red-500' : 'text-indigo-600'}`}>
+                        ¥{formState.cardId ? (customerCards.find(c => c.id === formState.cardId)?.balance || 0).toLocaleString() : (customer?.balance || 0).toLocaleString()}
+                      </p>
                     </div>
                   </div>
 
-                  {isInsufficient && amount > 0 && (
+                  {isInsufficient && amount > 0 && !formState.cardId && (
                     <div className="p-3 bg-red-50 border border-red-100 rounded-xl flex flex-col gap-2 text-left animate-in slide-in-from-top-2">
                       <div className="flex items-start gap-2">
                         <AlertTriangle size={16} className="text-red-500 mt-0.5 shrink-0" />
@@ -1075,6 +1437,18 @@ const App: React.FC = () => {
                     </div>
                   )}
 
+                  {isInsufficient && amount > 0 && formState.cardId && (
+                    <div className="p-3 bg-red-50 border border-red-100 rounded-xl flex flex-col gap-2 text-left animate-in slide-in-from-top-2">
+                      <div className="flex items-start gap-2">
+                        <AlertTriangle size={16} className="text-red-500 mt-0.5 shrink-0" />
+                        <div className="flex-1">
+                          <p className="text-xs font-bold text-red-700">活动卡余额不足</p>
+                          <p className="text-[10px] text-red-500 mt-0.5">折后需要扣除 ¥{actualAmount.toFixed(2)}，但卡内余额仅剩 ¥{(customerCards.find(c => c.id === formState.cardId)?.balance || 0).toLocaleString()}。</p>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-3 md:gap-4">
                     <div className="space-y-1 text-left">
                        <label className="text-[9px] font-black text-slate-400 uppercase ml-2">结算金额 (¥) *</label>
@@ -1089,9 +1463,25 @@ const App: React.FC = () => {
                      <label className="text-[9px] font-black text-slate-400 uppercase ml-2">业务备注</label>
                      <input value={formState.note} onChange={e=>setFormState({...formState, note: e.target.value})} placeholder="添加核销备注 (选填)" className="w-full p-3 md:p-4 bg-slate-50 rounded-xl md:rounded-2xl font-bold text-xs md:text-sm text-slate-900 outline-none border-2 border-transparent focus:border-indigo-400" />
                   </div>
-                  <div className="flex gap-3 md:gap-4 pt-2 md:pt-4">
-                     <button onClick={()=>handleConsume(custId, formState.amount, formState.itemName, 'balance', apptId)} disabled={isInsufficient && amount > 0} className={`flex-1 py-3 md:py-4 rounded-xl md:rounded-2xl font-black text-[10px] md:text-xs uppercase shadow-lg transition-all ${isInsufficient && amount > 0 ? 'bg-slate-200 text-slate-400 cursor-not-allowed shadow-none' : 'bg-indigo-600 text-white shadow-indigo-100 active:scale-95'}`}>余额核销</button>
-                     <button onClick={()=>handleConsume(custId, formState.amount, formState.itemName, 'cash', apptId)} className="flex-1 py-3 md:py-4 bg-slate-900 text-white rounded-xl md:rounded-2xl font-black text-[10px] md:text-xs uppercase shadow-lg active:scale-95 transition-all">现金收款</button>
+                  {getAvailableCards(custId).length > 0 && (
+                    <div className="space-y-1 text-left">
+                       <label className="text-[9px] font-black text-slate-400 uppercase ml-2">使用活动卡</label>
+                       <select value={formState.cardId || ''} onChange={e=>setFormState({...formState, cardId: e.target.value})} className="w-full p-3 md:p-4 bg-purple-50 rounded-xl md:rounded-2xl font-bold text-xs md:text-sm text-purple-900 outline-none border-2 border-transparent focus:border-purple-400">
+                         <option value="">不使用活动卡</option>
+                         {getAvailableCards(custId).map(card => (
+                           <option key={card.id} value={card.id}>{card.displayText}</option>
+                         ))}
+                       </select>
+                    </div>
+                  )}
+                  <div className="flex flex-col gap-3 md:gap-4 pt-2 md:pt-4">
+                     <div className="flex gap-3 md:gap-4">
+                       <button onClick={()=>handleConsume(custId, formState.amount, formState.itemName, 'balance', apptId)} disabled={isInsufficient && amount > 0 && !formState.cardId} className={`flex-1 py-3 md:py-4 rounded-xl md:rounded-2xl font-black text-[10px] md:text-xs uppercase shadow-lg transition-all ${isInsufficient && amount > 0 && !formState.cardId ? 'bg-slate-200 text-slate-400 cursor-not-allowed shadow-none' : 'bg-indigo-600 text-white shadow-indigo-100 active:scale-95'}`}>余额核销</button>
+                       <button onClick={()=>handleConsume(custId, formState.amount, formState.itemName, 'cash', apptId)} className="flex-1 py-3 md:py-4 bg-slate-900 text-white rounded-xl md:rounded-2xl font-black text-[10px] md:text-xs uppercase shadow-lg active:scale-95 transition-all">现金收款</button>
+                     </div>
+                     {formState.cardId && (
+                       <button onClick={()=>handleConsume(custId, formState.amount, formState.itemName, 'promotion_card', apptId, formState.cardId)} disabled={isInsufficient && amount > 0} className={`w-full py-3 md:py-4 rounded-xl md:rounded-2xl font-black text-[10px] md:text-xs uppercase shadow-lg transition-all ${isInsufficient && amount > 0 ? 'bg-slate-200 text-slate-400 cursor-not-allowed shadow-none' : 'bg-purple-600 text-white shadow-purple-200 active:scale-95'}`}>活动卡划扣</button>
+                     )}
                   </div>
                </div>
                );
@@ -1112,12 +1502,46 @@ const App: React.FC = () => {
                         <div className="col-span-2"><input value={formState.amount} onChange={e=>setFormState({...formState, amount: e.target.value})} type="number" placeholder="初始充值金额 (选填)" className="w-full p-3 md:p-4 bg-indigo-50/50 rounded-xl md:rounded-2xl font-black text-indigo-600 border-2 border-transparent focus:border-indigo-400 outline-none" /></div>
                       </div>
                     ) : (
-                      <div className="space-y-2">
-                        <input value={formState.custSearch || ''} onChange={e=>setFormState({...formState, custSearch: e.target.value})} placeholder="搜索会员姓名或手机号..." className="w-full p-3 md:p-4 bg-slate-50 rounded-xl md:rounded-2xl font-bold text-xs md:text-sm outline-none border-2 border-transparent focus:border-indigo-400 text-slate-900" />
-                        <select value={formState.apptCustId} onChange={e=>setFormState({...formState, apptCustId: e.target.value})} className="w-full p-3 md:p-4 bg-slate-50 rounded-xl md:rounded-2xl font-bold text-xs md:text-sm border-2 border-transparent focus:border-indigo-400 outline-none text-slate-900">
-                          <option value="">选择会员...</option>
-                          {customers.filter(c => !formState.custSearch || c.name.toLowerCase().includes(formState.custSearch.toLowerCase()) || c.phone.includes(formState.custSearch)).map(c=><option key={c.id} value={c.id}>{c.name} ({c.phone})</option>)}
-                        </select>
+                      <div className="space-y-2 relative">
+                        <input 
+                          value={formState.custSearch || ''} 
+                          onChange={e=>{
+                            setFormState({...formState, custSearch: e.target.value, apptCustId: ''});
+                            setIsNewApptSearchFocused(true);
+                          }} 
+                          onFocus={() => setIsNewApptSearchFocused(true)}
+                          onBlur={() => setTimeout(() => setIsNewApptSearchFocused(false), 200)}
+                          placeholder="搜索会员姓名或手机号..." 
+                          className="w-full p-3 md:p-4 bg-slate-50 rounded-xl md:rounded-2xl font-bold text-xs md:text-sm outline-none border-2 border-transparent focus:border-indigo-400 text-slate-900" 
+                        />
+                        {isNewApptSearchFocused && formState.custSearch && (
+                          <div className="absolute top-full left-0 right-0 mt-1 bg-white border rounded-xl shadow-lg z-50 max-h-48 overflow-y-auto custom-scroll">
+                            {customers.filter(c => c.name.toLowerCase().includes((formState.custSearch || '').toLowerCase()) || (c.phone || '').includes(formState.custSearch || '')).map(c => (
+                              <div 
+                                key={c.id} 
+                                className="px-4 py-3 hover:bg-indigo-50 cursor-pointer text-xs font-bold text-slate-800 flex justify-between items-center border-b last:border-0 border-slate-50"
+                                onClick={() => {
+                                  setFormState({...formState, custSearch: c.name, apptCustId: c.id});
+                                  setIsNewApptSearchFocused(false);
+                                }}
+                              >
+                                <span>{c.name}</span>
+                                <span className="text-[10px] text-slate-400 font-normal">{c.phone}</span>
+                              </div>
+                            ))}
+                            {customers.filter(c => c.name.toLowerCase().includes((formState.custSearch || '').toLowerCase()) || (c.phone || '').includes(formState.custSearch || '')).length === 0 && (
+                              <div className="px-4 py-4 text-center text-xs text-slate-400 italic">未找到匹配的会员</div>
+                            )}
+                          </div>
+                        )}
+                        {formState.apptCustId && (
+                          <div className="px-4 py-2 bg-indigo-50 text-indigo-700 rounded-xl text-xs font-bold flex items-center justify-between">
+                            <span>已选择: {customers.find(c => c.id === formState.apptCustId)?.name}</span>
+                            <button onClick={() => setFormState({...formState, apptCustId: '', custSearch: ''})} className="text-indigo-400 hover:text-indigo-600">
+                              <X size={14} />
+                            </button>
+                          </div>
+                        )}
                       </div>
                     )}
                     <div className="grid grid-cols-2 gap-3 md:gap-4">

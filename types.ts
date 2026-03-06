@@ -32,13 +32,30 @@ export interface Appointment {
   note?: string;
 }
 
+export interface Promotion {
+  id: string;
+  name: string;
+  discountRate: number; // e.g., 0.8 for 80% (8折)
+  createdAt: string;
+}
+
+export interface CustomerCard {
+  id: string;
+  customerId: string;
+  promotionId: string;
+  balance: number;
+  createdAt: string;
+}
+
 export interface Transaction {
   id: string;
   type: 'consume' | 'recharge';
   customerId: string | null;
   customerName: string;
-  amount: number;
-  paymentMethod: 'balance' | 'cash' | 'wechat' | 'alipay';
+  customerCardId?: string; // If null, it's the default balance
+  originalAmount?: number; // Only for consume
+  amount: number; // Actual amount deducted/recharged
+  paymentMethod: 'balance' | 'cash' | 'wechat' | 'alipay' | 'promotion_card';
   itemName: string;
   staffId?: string;
   timestamp: string;
@@ -51,10 +68,12 @@ export interface SystemLog {
   detail: string;
   timestamp: string;
   undoData?: {
-    type: 'add_customer' | 'recharge' | 'consume' | 'add_appt' | 'update_appt';
+    type: 'add_customer' | 'recharge' | 'consume' | 'add_appt' | 'update_appt' | 'add_promotion' | 'add_customer_card';
     targetId: string;
     secondaryId?: string; // 用于存放关联的 ID，如交易关联的客户 ID
+    customerCardId?: string;
     amount?: number;       // 用于财务撤销
+    originalAmount?: number;
     prevStatus?: string;   // 用于状态撤销
     paymentMethod?: string;
   };
