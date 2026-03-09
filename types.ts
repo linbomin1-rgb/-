@@ -52,6 +52,8 @@ export interface Promotion {
   id: string;
   name: string;
   discountRate: number; // e.g., 0.8 for 80% (8折)
+  startDate?: string;
+  endDate?: string;
   createdAt: string;
 }
 
@@ -69,6 +71,7 @@ export interface Transaction {
   customerId: string | null;
   customerName: string;
   customerCardId?: string; // If null, it's the default balance
+  promotionName?: string; // Add promotion name for display
   originalAmount?: number; // Only for consume
   amount: number; // Actual amount deducted/recharged
   paymentMethod: 'balance' | 'cash' | 'wechat' | 'alipay' | 'promotion_card' | 'meituan';

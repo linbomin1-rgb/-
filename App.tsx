@@ -9,7 +9,7 @@ import {
   ArrowUpCircle, ArrowDownCircle, CreditCard, Banknote, ShieldCheck,
   ChevronLeft, ChevronRight, Info, UserCheck, X, Filter, PlayCircle, PlusCircle,
   Edit3, Download, UserCircle, ReceiptText, Clock, Wallet, Shield, PlusSquare, ChevronDown, Undo2, AlertTriangle, User, Zap, TrendingUp, UserPlus2, Eye, History as HistoryIcon,
-  Minimize2, Maximize2, MousePointer2, MessageSquareText, Cake, BellOff
+  Minimize2, Maximize2, MousePointer2, MessageSquareText, Cake, BellOff, Gift
 } from 'lucide-react';
 import { Staff, Customer, Appointment, Transaction, SystemLog, Role, Promotion, CustomerCard, StaffReminder } from './types';
 import { analyzeBusinessData } from './services/geminiService';
@@ -47,6 +47,7 @@ const App: React.FC = () => {
   const [isApptSearchFocused, setIsApptSearchFocused] = useState(false);
   const [isNewApptSearchFocused, setIsNewApptSearchFocused] = useState(false);
   const [activeFinanceFilter, setActiveFinanceFilter] = useState<'all' | 'cash' | 'recharge' | 'consume'>('all');
+  const [financeSubTab, setFinanceSubTab] = useState<'daily' | 'transactions' | 'reports'>('daily');
   const [financeStartDate, setFinanceStartDate] = useState('');
   const [financeEndDate, setFinanceEndDate] = useState('');
 
@@ -80,12 +81,26 @@ const App: React.FC = () => {
   });
   
   const [isModalOpen, setIsModalOpen] = useState<string | null>(null);
+  const [confirmReminderId, setConfirmReminderId] = useState<string | null>(null);
   const [reminders, setReminders] = useState<StaffReminder[]>(() => {
     const saved = localStorage.getItem('bp_reminders');
     return saved ? JSON.parse(saved) : [];
   });
+  
+  const getPaymentMethodText = (method?: string) => {
+    switch (method) {
+      case 'wechat': return '微信';
+      case 'alipay': return '支付宝';
+      case 'meituan': return '美团';
+      case 'cash': return '现金';
+      case 'balance': return '余额';
+      case 'promotion_card': return '活动卡';
+      default: return '未知';
+    }
+  };
   const [showReminders, setShowReminders] = useState(false);
   const [selectedAppt, setSelectedAppt] = useState<Appointment | null>(null);
+  const [selectedPromoId, setSelectedPromoId] = useState<string | null>(null);
   const [isVoidingAppt, setIsVoidingAppt] = useState(false);
   const [editingTarget, setEditingTarget] = useState<Staff | null>(null);
   const [aiAnalysis, setAiAnalysis] = useState<string | null>(null);
@@ -114,7 +129,7 @@ const App: React.FC = () => {
     apptCustId: '',
     apptStaffId: '',
     apptProject: '',
-    apptDate: new Date().toISOString().split('T')[0],
+    apptDate: `${new Date().getFullYear()}-${String(new Date().getMonth() + 1).padStart(2, '0')}-${String(new Date().getDate()).padStart(2, '0')}`,
     apptStartTime: '10',
     apptEndTime: '11',
     custSearch: '',
@@ -123,6 +138,8 @@ const App: React.FC = () => {
     staffPass: '',
     promoName: '',
     promoDiscount: '',
+    promoStartDate: '',
+    promoEndDate: '',
     cardPromoId: '',
     cardAmount: '',
   });
@@ -148,30 +165,31 @@ const App: React.FC = () => {
   useEffect(() => {
     if (!currentUser) return;
 
-    const today = new Date();
-    const todayStr = today.toISOString().split('T')[0];
+    const now = new Date();
+    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const todayStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
     const newReminders: StaffReminder[] = [];
 
-    // 逻辑 A: 生日提醒 (未来 7 天)
+    // 逻辑 A: 生日提醒 (未来 30 天)
     customers.forEach(c => {
-      if (c.birthday && (c.assignedStaffId === currentUser.id || currentUser.role === 'admin')) {
-        const bday = new Date(c.birthday);
-        const nextBday = new Date(today.getFullYear(), bday.getMonth(), bday.getDate());
+      if (c.birthday) {
+        const [bYear, bMonth, bDay] = c.birthday.split('-').map(Number);
+        const nextBday = new Date(today.getFullYear(), bMonth - 1, bDay);
         if (nextBday < today) nextBday.setFullYear(today.getFullYear() + 1);
         
-        const diffDays = Math.ceil((nextBday.getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
-        if (diffDays >= 0 && diffDays <= 7) {
+        const diffDays = Math.round((nextBday.getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
+        if (diffDays >= 0 && diffDays <= 30) {
           const rid = `bday_${c.id}_${nextBday.getFullYear()}`;
           if (!reminders.find(r => r.id === rid)) {
             newReminders.push({
               id: rid,
               type: 'birthday',
-              content: `顾客 ${c.name} 将在 ${c.birthday.split('-').slice(1).join('-')} 过生日，请提前准备惊喜！`,
+              content: `顾客 ${c.name} 将在 ${bMonth}-${bDay} 过生日，请提前准备惊喜！`,
               customerId: c.id,
-              staffId: currentUser.id,
+              staffId: c.assignedStaffId || '',
               reminderDate: todayStr,
               status: 'pending',
-              createdAt: today.toISOString()
+              createdAt: now.toISOString()
             });
           }
         }
@@ -198,7 +216,7 @@ const App: React.FC = () => {
                 staffId: currentUser.id,
                 reminderDate: todayStr,
                 status: 'pending',
-                createdAt: today.toISOString()
+                createdAt: now.toISOString()
               });
             }
           }
@@ -207,46 +225,46 @@ const App: React.FC = () => {
     });
 
     if (newReminders.length > 0) {
-      setReminders(prev => [...prev, ...newReminders]);
+      setReminders(prev => {
+        // Only add reminders that don't already exist
+        const uniqueNewReminders = newReminders.filter(nr => !prev.some(pr => pr.id === nr.id));
+        return [...prev, ...uniqueNewReminders];
+      });
     }
   }, [customers, transactions, currentUser]);
 
-  const handleMarkReminderDone = (id: string) => {
-    setReminders(prev => prev.map(r => r.id === id ? { ...r, status: 'completed' } : r));
-  };
-
   // --- 锁定背景滚动 ---
   useEffect(() => {
-    if (isModalOpen || revokingLog || selectedAppt) {
+    if (isModalOpen || revokingLog || selectedAppt || selectedPromoId) {
       document.body.style.overflow = 'hidden';
     } else {
       document.body.style.overflow = '';
     }
     return () => { document.body.style.overflow = ''; };
-  }, [isModalOpen, revokingLog, selectedAppt]);
+  }, [isModalOpen, revokingLog, selectedAppt, selectedPromoId]);
 
   // --- 统计计算 ---
   const stats = useMemo(() => {
     const todayStr = new Date().toDateString();
     const todayTrans = transactions.filter(t => new Date(t.timestamp).toDateString() === todayStr);
 
-    const cashIncome = todayTrans.reduce((sum, t) => (t.type === 'consume' && t.paymentMethod !== 'balance') ? sum + (t.amount || 0) : sum, 0);
+    const cashIncome = todayTrans.reduce((sum, t) => (t.type === 'consume' && t.paymentMethod !== 'balance' && t.paymentMethod !== 'promotion_card') ? sum + (t.amount || 0) : sum, 0);
     const rechargeIncome = todayTrans.reduce((sum, t) => t.type === 'recharge' ? sum + (t.amount || 0) : sum, 0);
-    const consumption = todayTrans.reduce((sum, t) => t.type === 'consume' && t.paymentMethod === 'balance' ? sum + (t.amount || 0) : sum, 0);
-    const monthlyRevenue = transactions.filter(t => new Date(t.timestamp).getMonth() === new Date().getMonth()).reduce((sum, t) => (t.type === 'recharge' || (t.type === 'consume' && t.paymentMethod !== 'balance')) ? sum + (t.amount || 0) : sum, 0);
+    const consumption = todayTrans.reduce((sum, t) => t.type === 'consume' && (t.paymentMethod === 'balance' || t.paymentMethod === 'promotion_card') ? sum + (t.amount || 0) : sum, 0);
+    const monthlyRevenue = transactions.filter(t => new Date(t.timestamp).getMonth() === new Date().getMonth()).reduce((sum, t) => (t.type === 'recharge' || (t.type === 'consume' && t.paymentMethod !== 'balance' && t.paymentMethod !== 'promotion_card')) ? sum + (t.amount || 0) : sum, 0);
 
     // 个人业绩计算
     const myTodayTrans = todayTrans.filter(t => t.staffId === currentUser?.id);
-    const myCashIncome = myTodayTrans.reduce((sum, t) => (t.type === 'consume' && t.paymentMethod !== 'balance') ? sum + (t.amount || 0) : sum, 0);
+    const myCashIncome = myTodayTrans.reduce((sum, t) => (t.type === 'consume' && t.paymentMethod !== 'balance' && t.paymentMethod !== 'promotion_card') ? sum + (t.amount || 0) : sum, 0);
     const myRechargeIncome = myTodayTrans.reduce((sum, t) => t.type === 'recharge' ? sum + (t.amount || 0) : sum, 0);
-    const myConsumption = myTodayTrans.reduce((sum, t) => t.type === 'consume' && t.paymentMethod === 'balance' ? sum + (t.amount || 0) : sum, 0);
+    const myConsumption = myTodayTrans.reduce((sum, t) => t.type === 'consume' && (t.paymentMethod === 'balance' || t.paymentMethod === 'promotion_card') ? sum + (t.amount || 0) : sum, 0);
 
     // 员工个人业绩统计 (用于管理员查看)
     const staffStats = staff.map(s => {
       const sTrans = todayTrans.filter(t => t.staffId === s.id);
-      const sCash = sTrans.reduce((sum, t) => (t.type === 'consume' && t.paymentMethod !== 'balance') ? sum + (t.amount || 0) : sum, 0);
+      const sCash = sTrans.reduce((sum, t) => (t.type === 'consume' && t.paymentMethod !== 'balance' && t.paymentMethod !== 'promotion_card') ? sum + (t.amount || 0) : sum, 0);
       const sRecharge = sTrans.reduce((sum, t) => t.type === 'recharge' ? sum + (t.amount || 0) : sum, 0);
-      const sConsume = sTrans.reduce((sum, t) => t.type === 'consume' && t.paymentMethod === 'balance' ? sum + (t.amount || 0) : sum, 0);
+      const sConsume = sTrans.reduce((sum, t) => t.type === 'consume' && (t.paymentMethod === 'balance' || t.paymentMethod === 'promotion_card') ? sum + (t.amount || 0) : sum, 0);
       return {
         id: s.id,
         name: s.name,
@@ -278,7 +296,7 @@ const App: React.FC = () => {
   const chartData = useMemo(() => {
     return Array.from({ length: 7 }, (_, i) => {
       const d = new Date(); d.setDate(d.getDate() - (6 - i));
-      const income = transactions.filter(t => t && new Date(t.timestamp).toDateString() === d.toDateString()).reduce((sum, t) => (t.type === 'recharge' || (t.type === 'consume' && t.paymentMethod !== 'balance')) ? sum + (t.amount || 0) : sum, 0);
+      const income = transactions.filter(t => t && new Date(t.timestamp).toDateString() === d.toDateString()).reduce((sum, t) => (t.type === 'recharge' || (t.type === 'consume' && t.paymentMethod !== 'balance' && t.paymentMethod !== 'promotion_card')) ? sum + (t.amount || 0) : sum, 0);
       return { name: `${d.getMonth() + 1}/${d.getDate()}`, income };
     });
   }, [transactions]);
@@ -287,8 +305,8 @@ const App: React.FC = () => {
     return transactions.filter(t => {
       let typeMatch = true;
       if (activeFinanceFilter === 'recharge') typeMatch = t.type === 'recharge';
-      if (activeFinanceFilter === 'consume') typeMatch = t.type === 'consume' && t.paymentMethod === 'balance';
-      if (activeFinanceFilter === 'cash') typeMatch = t.type === 'consume' && t.paymentMethod !== 'balance';
+      if (activeFinanceFilter === 'consume') typeMatch = t.type === 'consume' && (t.paymentMethod === 'balance' || t.paymentMethod === 'promotion_card');
+      if (activeFinanceFilter === 'cash') typeMatch = t.type === 'consume' && t.paymentMethod !== 'balance' && t.paymentMethod !== 'promotion_card';
       
       if (!typeMatch) return false;
 
@@ -309,6 +327,95 @@ const App: React.FC = () => {
       return true;
     });
   }, [transactions, activeFinanceFilter, financeStartDate, financeEndDate]);
+
+  const dailySettlementData = useMemo(() => {
+    let sDate = new Date();
+    sDate.setHours(0, 0, 0, 0);
+    let eDate = new Date();
+    eDate.setHours(23, 59, 59, 999);
+
+    if (financeStartDate) {
+      sDate = new Date(financeStartDate);
+      sDate.setHours(0, 0, 0, 0);
+    }
+    if (financeEndDate) {
+      eDate = new Date(financeEndDate);
+      eDate.setHours(23, 59, 59, 999);
+    }
+
+    const tList = transactions.filter(t => {
+      const tDate = new Date(t.timestamp);
+      return tDate >= sDate && tDate <= eDate;
+    });
+
+    const incomeDetails = {
+      total: 0,
+      recharge: 0,
+      consume: 0,
+      cardConsume: 0,
+      cardConsumeBalance: 0,
+      cardConsumePromotion: 0,
+    };
+
+    const paymentMethods = {
+      cash: 0,
+      wechat: 0,
+      alipay: 0,
+      meituan: 0
+    };
+
+    const uniqueCustomerIds = new Set<string>();
+
+    tList.forEach(t => {
+      uniqueCustomerIds.add(t.customerId);
+      const amount = t.amount || 0;
+      if (t.type === 'recharge') {
+        incomeDetails.recharge += amount;
+        incomeDetails.total += amount;
+        if (t.paymentMethod in paymentMethods) {
+          paymentMethods[t.paymentMethod as keyof typeof paymentMethods] += amount;
+        }
+      } else if (t.type === 'consume') {
+        if (t.paymentMethod === 'balance' || t.paymentMethod === 'promotion_card') {
+          incomeDetails.cardConsume += amount;
+          if (t.paymentMethod === 'balance') {
+            incomeDetails.cardConsumeBalance += amount;
+          } else {
+            incomeDetails.cardConsumePromotion += amount;
+          }
+        } else {
+          incomeDetails.consume += amount;
+          incomeDetails.total += amount;
+          if (t.paymentMethod in paymentMethods) {
+            paymentMethods[t.paymentMethod as keyof typeof paymentMethods] += amount;
+          }
+        }
+      }
+    });
+
+    let newCustomersCount = 0;
+    let oldCustomersCount = 0;
+
+    uniqueCustomerIds.forEach(id => {
+      const c = customers.find(cust => cust.id === id);
+      if (c) {
+        const cDate = new Date(c.createdAt);
+        if (cDate >= sDate && cDate <= eDate) {
+          newCustomersCount++;
+        } else {
+          oldCustomersCount++;
+        }
+      }
+    });
+
+    return {
+      incomeDetails,
+      paymentMethods,
+      newCustomersCount,
+      oldCustomersCount,
+      transactionCount: tList.length
+    };
+  }, [transactions, customers, financeStartDate, financeEndDate]);
 
   const handleDownloadReport = () => {
     if (filteredTransactions.length === 0) {
@@ -400,11 +507,13 @@ const App: React.FC = () => {
       id: Date.now().toString(),
       name: formState.promoName,
       discountRate: discount,
+      startDate: formState.promoStartDate || undefined,
+      endDate: formState.promoEndDate || undefined,
       createdAt: new Date().toISOString()
     };
     setPromotions([...promotions, newPromo]);
     addLog('创建活动', newPromo.name);
-    setFormState({...formState, promoName: '', promoDiscount: ''});
+    setFormState({...formState, promoName: '', promoDiscount: '', promoStartDate: '', promoEndDate: ''});
     setIsModalOpen(null);
   };
 
@@ -425,6 +534,18 @@ const App: React.FC = () => {
     const promo = promotions.find(p => p.id === formState.cardPromoId);
     if (!promo) return alert('活动不存在');
 
+    const now = new Date();
+    if (promo.startDate && new Date(promo.startDate) > now) {
+      return alert('该活动尚未开始');
+    }
+    if (promo.endDate) {
+      const endDate = new Date(promo.endDate);
+      endDate.setHours(23, 59, 59, 999);
+      if (endDate < now) {
+        return alert('该活动已结束，无法办理');
+      }
+    }
+
     const newCard: CustomerCard = {
       id: Date.now().toString(),
       customerId,
@@ -442,6 +563,8 @@ const App: React.FC = () => {
       type: 'recharge',
       customerId,
       customerName: customer?.name || '未知',
+      customerCardId: newCard.id,
+      promotionName: promo.name,
       amount,
       paymentMethod: 'wechat', // Default to wechat for simplicity, or add to form
       itemName: `办理活动卡: ${promo.name}`,
@@ -521,15 +644,16 @@ const App: React.FC = () => {
     setEditingTarget(null);
   };
 
-  const handleRecharge = (custId: string, amountStr: string, method: 'cash' | 'wechat' | 'alipay' | 'meituan' = 'cash') => {
+  const handleRecharge = (custId: string, amountStr: string, method: 'cash' | 'wechat' | 'alipay' | 'meituan' = 'cash', forceCustomerName?: string) => {
     const amount = parseFloat(amountStr);
     if (isNaN(amount) || amount <= 0) return alert('请输入有效的充值金额');
     
     setCustomers(prev => prev.map(c => c.id === custId ? { ...c, balance: c.balance + amount } : c));
     const cust = customers.find(c => c.id === custId);
+    const custName = forceCustomerName || cust?.name || '未知';
     const transId = `TRX-${Date.now()}`;
-    setTransactions(prev => [{ id: transId, type: 'recharge', customerId: custId, customerName: cust?.name || '未知', amount, paymentMethod: method, itemName: '充值', staffId: currentUser?.id, timestamp: new Date().toISOString() }, ...prev]);
-    addLog('充值', `${cust?.name} ¥${amount}`, { type: 'recharge', targetId: transId, secondaryId: custId, amount, paymentMethod: method });
+    setTransactions(prev => [{ id: transId, type: 'recharge', customerId: custId, customerName: custName, amount, paymentMethod: method, itemName: '充值', staffId: currentUser?.id, timestamp: new Date().toISOString() }, ...prev]);
+    addLog('充值', `${custName} ¥${amount}`, { type: 'recharge', targetId: transId, secondaryId: custId, amount, paymentMethod: method });
     setIsModalOpen(null);
   };
 
@@ -542,6 +666,7 @@ const App: React.FC = () => {
     
     let actualAmount = amount;
     let originalAmount = amount;
+    let promoName = undefined;
 
     if (method === 'balance') {
       if ((cust?.balance || 0) < amount) { alert('余额不足'); return; }
@@ -552,6 +677,7 @@ const App: React.FC = () => {
       const promo = promotions.find(p => p.id === card.promotionId);
       if (!promo) return alert('未找到该活动规则');
       
+      promoName = promo.name;
       actualAmount = amount * promo.discountRate;
       if (card.balance < actualAmount) { alert(`卡内余额不足，需要扣除 ${actualAmount.toFixed(2)}，当前余额 ${card.balance.toFixed(2)}`); return; }
       
@@ -567,6 +693,7 @@ const App: React.FC = () => {
       amount: actualAmount, 
       originalAmount: method === 'promotion_card' ? originalAmount : undefined,
       customerCardId: cardId,
+      promotionName: promoName,
       paymentMethod: method, 
       itemName, 
       staffId: currentUser?.id, 
@@ -728,7 +855,7 @@ const App: React.FC = () => {
                                 <div className="flex justify-between items-center mt-2">
                                   <span className="text-[8px] font-bold text-slate-400 uppercase">{new Date(r.createdAt).toLocaleDateString()}</span>
                                   <button 
-                                    onClick={(e) => { e.stopPropagation(); handleMarkReminderDone(r.id); }}
+                                    onClick={(e) => { e.stopPropagation(); setConfirmReminderId(r.id); setShowReminders(false); }}
                                     className="text-[9px] font-black text-indigo-600 hover:underline uppercase tracking-tighter"
                                   >
                                     标记已处理
@@ -771,7 +898,7 @@ const App: React.FC = () => {
                 </div>
               )}
             </div>
-            <button onClick={() => { setFormState({...formState, apptCustId: '', apptProject: '', apptNote: ''}); setIsModalOpen('new_appt'); }} className="bg-indigo-600 text-white p-1.5 px-3 md:px-6 md:py-2.5 rounded-lg md:rounded-xl font-bold shadow-lg shadow-indigo-100 flex items-center gap-1.5 md:gap-2 hover:bg-indigo-700 transition-all text-[9px] md:text-xs">
+            <button onClick={() => { setFormState({...formState, apptCustId: '', custSearch: '', apptProject: '', apptNote: '', apptDate: `${selectedDate.getFullYear()}-${String(selectedDate.getMonth() + 1).padStart(2, '0')}-${String(selectedDate.getDate()).padStart(2, '0')}`}); setIsModalOpen('new_appt'); }} className="bg-indigo-600 text-white p-1.5 px-3 md:px-6 md:py-2.5 rounded-lg md:rounded-xl font-bold shadow-lg shadow-indigo-100 flex items-center gap-1.5 md:gap-2 hover:bg-indigo-700 transition-all text-[9px] md:text-xs">
               <Plus size={12} className="md:w-[18px] md:h-[18px]"/> <span className="hidden md:inline">新增预约</span><span className="md:hidden">新增</span>
             </button>
           </div>
@@ -811,22 +938,89 @@ const App: React.FC = () => {
                     </span>
                   </div>
                   <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 relative z-10">
-                    {reminders.filter(r => r.type === 'birthday' && r.status === 'pending').map(r => (
+                    {reminders.filter(r => r.type === 'birthday' && r.status === 'pending').sort((a, b) => {
+                      const custA = customers.find(c => c.id === a.customerId);
+                      const custB = customers.find(c => c.id === b.customerId);
+                      if (!custA?.birthday || !custB?.birthday) return 0;
+                      const getNextBday = (birthday: string) => {
+                        const [_, m, d] = birthday.split('-').map(Number);
+                        const now = new Date();
+                        const nextBday = new Date(now.getFullYear(), m - 1, d);
+                        if (nextBday < new Date(now.getFullYear(), now.getMonth(), now.getDate())) nextBday.setFullYear(now.getFullYear() + 1);
+                        return nextBday.getTime();
+                      };
+                      return getNextBday(custA.birthday) - getNextBday(custB.birthday);
+                    }).map(r => {
+                      const cust = customers.find(c => c.id === r.customerId);
+                      const assignedStaff = staff.find(s => s.id === cust?.assignedStaffId);
+                      return (
                       <div 
                         key={r.id} 
-                        onClick={() => handleMarkReminderDone(r.id)}
-                        className="flex items-center gap-3 p-3 bg-slate-50 rounded-2xl border border-slate-100 hover:bg-pink-50 hover:border-pink-200 transition-all cursor-pointer group"
+                        onClick={() => setConfirmReminderId(r.id)}
+                        className="flex items-center gap-3 p-3 pt-4 bg-slate-50 rounded-2xl border border-slate-100 hover:bg-pink-50 hover:border-pink-200 transition-all cursor-pointer group relative overflow-hidden"
                       >
+                        <div className="absolute top-0 right-0 bg-indigo-100/80 text-indigo-600 text-[8px] font-black px-2 py-0.5 rounded-bl-xl z-10 tracking-widest">
+                          {assignedStaff ? assignedStaff.name : '未分配'}
+                        </div>
                         <div className="w-10 h-10 bg-white rounded-xl flex items-center justify-center text-pink-500 shadow-sm group-hover:scale-110 transition-transform">
                           <Cake size={18} />
                         </div>
                         <div className="flex-1 min-w-0">
-                          <p className="text-xs font-bold text-slate-800 truncate">{r.content.split(' ')[0]}</p>
-                          <p className="text-[10px] text-slate-400 font-medium truncate">{r.content.split(' ').slice(1).join(' ')}</p>
+                          <p className="text-xs font-bold text-slate-800 truncate">{r.content.split('将在')[0]}</p>
+                          <p className="text-[10px] text-slate-400 font-medium truncate">
+                            将在{r.content.split('将在')[1]}
+                          </p>
                         </div>
                         <CheckCircle size={14} className="text-slate-300 group-hover:text-pink-500 transition-colors" />
                       </div>
-                    ))}
+                    )})}
+                  </div>
+                </div>
+              )}
+
+              {/* 沉睡唤醒提醒卡片 */}
+              {reminders.filter(r => r.type === 'dormant' && r.status === 'pending').length > 0 && (
+                <div className="bg-white p-4 md:p-6 rounded-3xl md:rounded-[2.5rem] border shadow-sm border-amber-100 overflow-hidden relative">
+                  <div className="absolute top-0 right-0 w-32 h-32 bg-amber-50 rounded-full -mr-16 -mt-16 opacity-50"></div>
+                  <div className="flex items-center justify-between mb-4 relative z-10">
+                    <h3 className="text-xs md:text-sm font-black uppercase tracking-widest text-slate-800 flex items-center gap-2">
+                      <Zap size={16} className="text-amber-500"/> 沉睡唤醒提醒
+                    </h3>
+                    <span className="text-[10px] font-bold text-amber-500 bg-amber-50 px-2 py-1 rounded-full">
+                      {reminders.filter(r => r.type === 'dormant' && r.status === 'pending').length} 位会员
+                    </span>
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 relative z-10">
+                    {reminders.filter(r => r.type === 'dormant' && r.status === 'pending').sort((a, b) => {
+                      const getDays = (content: string) => {
+                        const match = content.match(/(\d+)\s*天/);
+                        return match ? parseInt(match[1]) : 0;
+                      };
+                      return getDays(b.content) - getDays(a.content); // 沉睡天数多的排前面
+                    }).map(r => {
+                      const cust = customers.find(c => c.id === r.customerId);
+                      const assignedStaff = staff.find(s => s.id === cust?.assignedStaffId);
+                      return (
+                      <div 
+                        key={r.id} 
+                        onClick={() => setConfirmReminderId(r.id)}
+                        className="flex items-center gap-3 p-3 pt-4 bg-slate-50 rounded-2xl border border-slate-100 hover:bg-amber-50 hover:border-amber-200 transition-all cursor-pointer group relative overflow-hidden"
+                      >
+                        <div className="absolute top-0 right-0 bg-indigo-100/80 text-indigo-600 text-[8px] font-black px-2 py-0.5 rounded-bl-xl z-10 tracking-widest">
+                          {assignedStaff ? assignedStaff.name : '未分配'}
+                        </div>
+                        <div className="w-10 h-10 bg-white rounded-xl flex items-center justify-center text-amber-500 shadow-sm group-hover:scale-110 transition-transform">
+                          <Zap size={18} />
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <p className="text-xs font-bold text-slate-800 truncate">{r.content.split('已有')[0]}</p>
+                          <p className="text-[10px] text-slate-400 font-medium truncate">
+                            已有{r.content.split('已有')[1]}
+                          </p>
+                        </div>
+                        <CheckCircle size={14} className="text-slate-300 group-hover:text-amber-500 transition-colors" />
+                      </div>
+                    )})}
                   </div>
                 </div>
               )}
@@ -975,15 +1169,37 @@ const App: React.FC = () => {
                   <button onClick={()=>setViewMode('month')} className={`px-2 py-1 md:px-4 md:py-2 rounded-md md:rounded-lg text-[9px] md:text-xs font-bold transition-all ${viewMode==='month'?'bg-white shadow-sm text-indigo-600':'text-slate-500'}`}>月历</button>
                 </div>
                 <div className="flex items-center gap-1 md:gap-3 font-black text-[9px] md:text-xs uppercase tracking-widest">
+                  <button onClick={() => setSelectedDate(new Date())} className="px-2 py-1 md:px-3 md:py-1.5 bg-indigo-50 text-indigo-600 rounded-lg hover:bg-indigo-100 transition-colors mr-1 md:mr-2">今日</button>
                   <button onClick={()=>{
                     const d = new Date(selectedDate);
-                    d.setMonth(d.getMonth() - 1);
+                    if (viewMode === 'day') {
+                      d.setDate(d.getDate() - 1);
+                    } else {
+                      d.setMonth(d.getMonth() - 1);
+                    }
                     setSelectedDate(d);
                   }} className="p-1 hover:bg-slate-200 rounded-lg transition-all"><ChevronLeft size={14} className="md:w-[18px] md:h-[18px]"/></button>
-                  {selectedDate.getMonth()+1}月{viewMode==='day'&&`${selectedDate.getDate()}日`}
+                  <div className="relative flex items-center justify-center cursor-pointer hover:bg-slate-100 px-2 py-1 rounded-lg transition-colors">
+                    <input 
+                      type="date" 
+                      value={`${selectedDate.getFullYear()}-${String(selectedDate.getMonth() + 1).padStart(2, '0')}-${String(selectedDate.getDate()).padStart(2, '0')}`} 
+                      onChange={(e) => {
+                        if (e.target.value) {
+                          const [y, m, d] = e.target.value.split('-').map(Number);
+                          setSelectedDate(new Date(y, m - 1, d));
+                        }
+                      }}
+                      className="absolute inset-0 opacity-0 cursor-pointer w-full h-full"
+                    />
+                    <span>{selectedDate.getFullYear()}年{selectedDate.getMonth()+1}月{viewMode==='day'&&`${selectedDate.getDate()}日`}</span>
+                  </div>
                   <button onClick={()=>{
                     const d = new Date(selectedDate);
-                    d.setMonth(d.getMonth() + 1);
+                    if (viewMode === 'day') {
+                      d.setDate(d.getDate() + 1);
+                    } else {
+                      d.setMonth(d.getMonth() + 1);
+                    }
                     setSelectedDate(d);
                   }} className="p-1 hover:bg-slate-200 rounded-lg transition-all"><ChevronRight size={14} className="md:w-[18px] md:h-[18px]"/></button>
                 </div>
@@ -997,15 +1213,26 @@ const App: React.FC = () => {
                         <div className="flex border-b sticky top-0 bg-white z-30 shadow-sm">
                           <div className="w-20 border-r bg-slate-50/50 sticky left-0 z-40"></div>
                           <div className="flex">
-                            {staff.map(s => (
+                            {staff.map(s => {
+                              const staffAppts = appointments.filter(a => a.staffId === s.id && new Date(a.startTime).toDateString() === selectedDate.toDateString()).sort((a, b) => a.startHour - b.startHour);
+                              return (
                               <div key={s.id} className="w-48 p-3 border-r last:border-r-0 text-center flex flex-col items-center gap-1.5 shrink-0">
                                 <div className="w-8 h-8 bg-indigo-50 rounded-lg flex items-center justify-center font-black text-indigo-600 border border-indigo-100 text-[10px]">{s.avatar}</div>
                                 <div>
                                   <div className="text-[11px] font-black text-slate-900 leading-none">{s.name}</div>
                                   <div className="text-[8px] text-slate-400 font-bold uppercase mt-0.5 tracking-tighter">{s.role}</div>
                                 </div>
+                                {staffAppts.length > 0 && (
+                                  <div className="flex flex-wrap justify-center gap-1 mt-1">
+                                    {staffAppts.map(a => (
+                                      <span key={a.id} className={`text-[8px] px-1 py-0.5 rounded font-bold ${a.status==='pending'?'bg-amber-50 text-amber-600':a.status==='confirmed'?'bg-indigo-50 text-indigo-600':a.status==='completed'?'bg-emerald-50 text-emerald-600':'bg-slate-100 text-slate-500'}`}>
+                                        {a.startHour}:00
+                                      </span>
+                                    ))}
+                                  </div>
+                                )}
                               </div>
-                            ))}
+                            )})}
                           </div>
                         </div>
                         <div className="flex">
@@ -1025,9 +1252,12 @@ const App: React.FC = () => {
                                       setFormState({ 
                                         ...formState, 
                                         apptStaffId: s.id, 
+                                        apptDate: `${selectedDate.getFullYear()}-${String(selectedDate.getMonth() + 1).padStart(2, '0')}-${String(selectedDate.getDate()).padStart(2, '0')}`,
                                         apptStartTime: (i + 8).toString(),
                                         apptEndTime: (i + 9).toString(),
-                                        apptNote: ''
+                                        apptNote: '',
+                                        custSearch: '',
+                                        apptCustId: ''
                                       });
                                       setIsModalOpen('new_appt');
                                     }}
@@ -1084,12 +1314,23 @@ const App: React.FC = () => {
                           <div className="flex border-b bg-slate-50 sticky top-0 z-30">
                             <div className="w-12 shrink-0 border-r bg-slate-50 sticky left-0 z-40"></div>
                             <div className="flex">
-                              {staff.map(s => (
+                              {staff.map(s => {
+                                const staffAppts = appointments.filter(a => a.staffId === s.id && new Date(a.startTime).toDateString() === selectedDate.toDateString()).sort((a, b) => a.startHour - b.startHour);
+                                return (
                                 <div key={s.id} className="w-24 shrink-0 p-2 text-center border-r last:border-r-0 flex flex-col items-center gap-1">
                                   <div className="w-6 h-6 bg-white rounded-lg flex items-center justify-center font-black text-indigo-600 border text-[8px]">{s.avatar}</div>
                                   <div className="text-[9px] font-bold truncate w-full">{s.name}</div>
+                                  {staffAppts.length > 0 && (
+                                    <div className="flex flex-wrap justify-center gap-0.5 mt-0.5">
+                                      {staffAppts.map(a => (
+                                        <span key={a.id} className={`text-[7px] px-1 py-0.5 rounded font-bold ${a.status==='pending'?'bg-amber-50 text-amber-600':a.status==='confirmed'?'bg-indigo-50 text-indigo-600':a.status==='completed'?'bg-emerald-50 text-emerald-600':'bg-slate-100 text-slate-500'}`}>
+                                          {a.startHour}:00
+                                        </span>
+                                      ))}
+                                    </div>
+                                  )}
                                 </div>
-                              ))}
+                              )})}
                             </div>
                           </div>
                           <div className="flex flex-1">
@@ -1111,9 +1352,12 @@ const App: React.FC = () => {
                                         setFormState({ 
                                           ...formState, 
                                           apptStaffId: s.id, 
+                                          apptDate: `${selectedDate.getFullYear()}-${String(selectedDate.getMonth() + 1).padStart(2, '0')}-${String(selectedDate.getDate()).padStart(2, '0')}`,
                                           apptStartTime: (i + 8).toString(),
                                           apptEndTime: (i + 9).toString(),
-                                          apptNote: ''
+                                          apptNote: '',
+                                          custSearch: '',
+                                          apptCustId: ''
                                         });
                                         setIsModalOpen('new_appt');
                                       }}
@@ -1233,6 +1477,12 @@ const App: React.FC = () => {
 
           {activeTab === 'finance' && (
             <div className="space-y-4 md:space-y-6 animate-in fade-in">
+              <div className="flex bg-slate-100 p-1 rounded-xl md:rounded-2xl mb-4 md:mb-6 w-full md:w-auto self-start">
+                <button onClick={()=>setFinanceSubTab('daily')} className={`flex-1 md:flex-none px-4 md:px-6 py-2 md:py-3 rounded-lg md:rounded-xl text-[10px] md:text-xs font-black uppercase transition-all ${financeSubTab==='daily'?'bg-white shadow-sm text-indigo-600':'text-slate-500 hover:text-slate-700'}`}>日结账单</button>
+                <button onClick={()=>setFinanceSubTab('transactions')} className={`flex-1 md:flex-none px-4 md:px-6 py-2 md:py-3 rounded-lg md:rounded-xl text-[10px] md:text-xs font-black uppercase transition-all ${financeSubTab==='transactions'?'bg-white shadow-sm text-indigo-600':'text-slate-500 hover:text-slate-700'}`}>水单记录</button>
+                <button onClick={()=>setFinanceSubTab('reports')} className={`flex-1 md:flex-none px-4 md:px-6 py-2 md:py-3 rounded-lg md:rounded-xl text-[10px] md:text-xs font-black uppercase transition-all ${financeSubTab==='reports'?'bg-white shadow-sm text-indigo-600':'text-slate-500 hover:text-slate-700'}`}>多维度报表</button>
+              </div>
+
               <div className="bg-white p-4 md:p-6 rounded-2xl md:rounded-[2rem] border shadow-sm flex flex-col md:flex-row gap-3 md:gap-4 items-end">
                 <div className="flex-1 w-full">
                   <label className="block text-[9px] md:text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1 md:mb-2">开始日期</label>
@@ -1242,44 +1492,182 @@ const App: React.FC = () => {
                   <label className="block text-[9px] md:text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1 md:mb-2">结束日期</label>
                   <input type="date" value={financeEndDate} onChange={e => setFinanceEndDate(e.target.value)} className="w-full bg-slate-50 border-none rounded-xl px-3 md:px-4 py-2.5 md:py-3 text-xs md:text-sm font-bold text-slate-700 focus:ring-2 focus:ring-indigo-500 outline-none" />
                 </div>
-                <button onClick={handleDownloadReport} className="w-full md:w-auto px-5 md:px-6 py-2.5 md:py-3 bg-indigo-600 text-white rounded-xl font-black text-[9px] md:text-[10px] uppercase tracking-widest shadow-lg shadow-indigo-200 hover:bg-indigo-700 active:scale-95 transition-all flex items-center justify-center gap-1.5 md:gap-2">
-                  <Download size={14} className="md:w-4 md:h-4"/>
-                  <span>下载报表</span>
-                </button>
-              </div>
-
-              <div className="flex flex-wrap items-center justify-between gap-3 md:gap-4">
-                <div className="flex bg-white p-1 rounded-xl md:rounded-2xl border shadow-sm overflow-x-auto custom-scroll">
-                  {[{id:'all',label:'全部'},{id:'cash',label:'收入'},{id:'consume',label:'卡耗'},{id:'recharge',label:'充值'}].map(f=>(
-                    <button key={f.id} onClick={()=>setActiveFinanceFilter(f.id as any)} className={`px-4 md:px-5 py-2 md:py-2.5 rounded-lg md:rounded-xl text-[9px] md:text-[10px] font-black uppercase whitespace-nowrap transition-all ${activeFinanceFilter===f.id?'bg-indigo-600 text-white shadow-lg':'text-slate-400 hover:text-slate-600'}`}>{f.label}</button>
-                  ))}
+                <div className="flex gap-2 w-full md:w-auto">
+                  <button onClick={() => {
+                    const today = new Date();
+                    const dateStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
+                    setFinanceStartDate(dateStr);
+                    setFinanceEndDate(dateStr);
+                  }} className="flex-1 md:flex-none px-4 md:px-5 py-2.5 md:py-3 bg-slate-100 text-slate-600 rounded-xl font-black text-[9px] md:text-[10px] uppercase tracking-widest hover:bg-slate-200 transition-all">今日</button>
+                  <button onClick={() => {
+                    const today = new Date();
+                    const start = new Date(today);
+                    start.setDate(today.getDate() - today.getDay() + (today.getDay() === 0 ? -6 : 1)); // Monday
+                    const end = new Date(start);
+                    end.setDate(start.getDate() + 6); // Sunday
+                    setFinanceStartDate(`${start.getFullYear()}-${String(start.getMonth() + 1).padStart(2, '0')}-${String(start.getDate()).padStart(2, '0')}`);
+                    setFinanceEndDate(`${end.getFullYear()}-${String(end.getMonth() + 1).padStart(2, '0')}-${String(end.getDate()).padStart(2, '0')}`);
+                  }} className="flex-1 md:flex-none px-4 md:px-5 py-2.5 md:py-3 bg-slate-100 text-slate-600 rounded-xl font-black text-[9px] md:text-[10px] uppercase tracking-widest hover:bg-slate-200 transition-all">本周</button>
+                  <button onClick={() => {
+                    const today = new Date();
+                    const start = new Date(today.getFullYear(), today.getMonth(), 1);
+                    const end = new Date(today.getFullYear(), today.getMonth() + 1, 0);
+                    setFinanceStartDate(`${start.getFullYear()}-${String(start.getMonth() + 1).padStart(2, '0')}-${String(start.getDate()).padStart(2, '0')}`);
+                    setFinanceEndDate(`${end.getFullYear()}-${String(end.getMonth() + 1).padStart(2, '0')}-${String(end.getDate()).padStart(2, '0')}`);
+                  }} className="flex-1 md:flex-none px-4 md:px-5 py-2.5 md:py-3 bg-slate-100 text-slate-600 rounded-xl font-black text-[9px] md:text-[10px] uppercase tracking-widest hover:bg-slate-200 transition-all">本月</button>
                 </div>
               </div>
-              <div className="bg-white rounded-2xl md:rounded-[2.5rem] border shadow-sm overflow-hidden overflow-x-auto custom-scroll">
-                <table className="w-full text-left min-w-full md:min-w-[700px]">
-                  <thead className="bg-slate-50 text-[9px] md:text-[10px] font-black text-slate-400 uppercase border-b"><tr className="border-b"><th className="px-0.5 md:px-6 py-2 md:py-5">单号</th><th className="px-0.5 md:px-6 py-2 md:py-5">分类</th><th className="px-0.5 md:px-6 py-2 md:py-5">姓名</th><th className="px-0.5 md:px-6 py-2 md:py-5">金额</th><th className="px-0.5 md:px-6 py-2 md:py-5">时间</th><th className="px-0.5 md:px-6 py-2 md:py-5 text-right">操作</th></tr></thead>
-                  <tbody className="divide-y text-[10px] md:text-sm">
-                    {filteredTransactions.map(t=>(
-                      <tr key={t.id} className="hover:bg-slate-50/50 transition-colors">
-                        <td className="px-0.5 md:px-6 py-1.5 md:py-5 font-mono text-[8px] md:text-[9px] text-slate-300 uppercase">{t.id.slice(-6)}</td>
-                        <td className="px-0.5 md:px-6 py-1.5 md:py-5">
-                          <span className={`text-[7px] md:text-[8px] font-black px-1 md:px-1.5 py-0.5 rounded uppercase ${t.type==='recharge'?'bg-blue-100 text-blue-700':(t.paymentMethod==='balance'?'bg-amber-100 text-amber-700':t.paymentMethod==='promotion_card'?'bg-purple-100 text-purple-700':'bg-indigo-100 text-indigo-700')}`}>
-                            {t.type==='recharge'?'充值':(t.paymentMethod==='balance'?'卡耗':t.paymentMethod==='promotion_card'?'活动卡':'实收')}
-                          </span>
-                        </td>
-                        <td className="px-0.5 md:px-6 py-1.5 md:py-5 font-bold text-[9px] md:text-xs text-slate-800 truncate max-w-[50px] md:max-w-none">{t.customerName || '未知客户'}</td>
-                        <td className={`px-0.5 md:px-6 py-1.5 md:py-5 font-black text-[9px] md:text-sm ${t.type==='recharge'?'text-green-600':'text-slate-900'}`}>¥{(t.amount || 0).toLocaleString()}</td>
-                        <td className="px-0.5 md:px-6 py-1.5 md:py-5 text-[8px] md:text-[10px] text-slate-400 font-bold whitespace-nowrap">{new Date(t.timestamp).toLocaleString().slice(5,16)}</td>
-                        <td className="px-0.5 md:px-6 py-1.5 md:py-5 text-right">
-                          <button onClick={() => handleDeleteTransaction(t.id)} className="p-1 md:p-2 text-slate-300 hover:text-red-500 transition-all">
-                            <Trash2 size={12} className="md:w-4 md:h-4" />
-                          </button>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
+
+              {financeSubTab === 'daily' && (
+                <div className="space-y-4 md:space-y-6 animate-in fade-in">
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4 md:gap-6">
+                    <div className="bg-indigo-600 p-6 rounded-2xl md:rounded-[2rem] text-white shadow-lg shadow-indigo-200 relative overflow-hidden">
+                      <div className="absolute top-0 right-0 w-32 h-32 bg-white/10 rounded-bl-full -z-0"></div>
+                      <div className="relative z-10">
+                        <h3 className="text-[10px] md:text-xs font-black uppercase tracking-widest text-indigo-200 mb-2">实收总额 (¥)</h3>
+                        <div className="text-3xl md:text-4xl font-black">{dailySettlementData.incomeDetails.total.toLocaleString()}</div>
+                        <div className="mt-4 flex gap-4 text-xs font-bold">
+                          <div>
+                            <span className="text-indigo-200">充值收入: </span>
+                            <span>¥{dailySettlementData.incomeDetails.recharge.toLocaleString()}</span>
+                          </div>
+                          <div>
+                            <span className="text-indigo-200">散客收入: </span>
+                            <span>¥{dailySettlementData.incomeDetails.consume.toLocaleString()}</span>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                    
+                    <div className="bg-white p-6 rounded-2xl md:rounded-[2rem] border shadow-sm">
+                      <h3 className="text-[10px] md:text-xs font-black uppercase tracking-widest text-slate-400 mb-4 flex items-center gap-2"><CreditCard size={14}/> 支付方式汇总</h3>
+                      <div className="space-y-3">
+                        <div className="flex justify-between items-center text-sm font-bold">
+                          <div className="flex items-center gap-2"><div className="w-2 h-2 rounded-full bg-green-500"></div>微信</div>
+                          <span>¥{dailySettlementData.paymentMethods.wechat.toLocaleString()}</span>
+                        </div>
+                        <div className="flex justify-between items-center text-sm font-bold">
+                          <div className="flex items-center gap-2"><div className="w-2 h-2 rounded-full bg-blue-500"></div>支付宝</div>
+                          <span>¥{dailySettlementData.paymentMethods.alipay.toLocaleString()}</span>
+                        </div>
+                        <div className="flex justify-between items-center text-sm font-bold">
+                          <div className="flex items-center gap-2"><div className="w-2 h-2 rounded-full bg-slate-800"></div>现金</div>
+                          <span>¥{dailySettlementData.paymentMethods.cash.toLocaleString()}</span>
+                        </div>
+                        <div className="flex justify-between items-center text-sm font-bold">
+                          <div className="flex items-center gap-2"><div className="w-2 h-2 rounded-full bg-orange-500"></div>美团</div>
+                          <span>¥{dailySettlementData.paymentMethods.meituan.toLocaleString()}</span>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="bg-white p-6 rounded-2xl md:rounded-[2rem] border shadow-sm flex flex-col justify-between">
+                      <div>
+                        <h3 className="text-[10px] md:text-xs font-black uppercase tracking-widest text-slate-400 mb-4 flex items-center gap-2"><Users size={14}/> 客流与消耗</h3>
+                        <div className="grid grid-cols-2 gap-4 mb-4">
+                          <div className="bg-slate-50 p-3 rounded-xl">
+                            <div className="text-[10px] font-black text-slate-400 uppercase mb-1">新客数</div>
+                            <div className="text-xl font-black text-indigo-600">{dailySettlementData.newCustomersCount}</div>
+                          </div>
+                          <div className="bg-slate-50 p-3 rounded-xl">
+                            <div className="text-[10px] font-black text-slate-400 uppercase mb-1">老客数</div>
+                            <div className="text-xl font-black text-slate-800">{dailySettlementData.oldCustomersCount}</div>
+                          </div>
+                        </div>
+                      </div>
+                      <div className="bg-amber-50 p-3 rounded-xl flex flex-col justify-center">
+                        <div className="flex justify-between items-center mb-1">
+                          <div className="text-[10px] font-black text-amber-600 uppercase">卡耗总额 (不计入实收)</div>
+                          <div className="text-sm font-black text-amber-700">¥{dailySettlementData.incomeDetails.cardConsume.toLocaleString()}</div>
+                        </div>
+                        <div className="flex justify-between text-[9px] text-amber-600/80 font-bold">
+                          <span>储值卡: ¥{dailySettlementData.incomeDetails.cardConsumeBalance.toLocaleString()}</span>
+                          <span>活动卡: ¥{dailySettlementData.incomeDetails.cardConsumePromotion.toLocaleString()}</span>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {financeSubTab === 'transactions' && (
+                <div className="space-y-4 animate-in fade-in">
+                  <div className="flex flex-wrap items-center justify-between gap-3 md:gap-4">
+                    <div className="flex bg-white p-1 rounded-xl md:rounded-2xl border shadow-sm overflow-x-auto custom-scroll">
+                      {[{id:'all',label:'全部'},{id:'cash',label:'收入'},{id:'consume',label:'卡耗'},{id:'recharge',label:'充值'}].map(f=>(
+                        <button key={f.id} onClick={()=>setActiveFinanceFilter(f.id as any)} className={`px-4 md:px-5 py-2 md:py-2.5 rounded-lg md:rounded-xl text-[9px] md:text-[10px] font-black uppercase whitespace-nowrap transition-all ${activeFinanceFilter===f.id?'bg-indigo-600 text-white shadow-lg':'text-slate-400 hover:text-slate-600'}`}>{f.label}</button>
+                      ))}
+                    </div>
+                    <button onClick={handleDownloadReport} className="w-full md:w-auto px-5 md:px-6 py-2.5 md:py-3 bg-indigo-600 text-white rounded-xl font-black text-[9px] md:text-[10px] uppercase tracking-widest shadow-lg shadow-indigo-200 hover:bg-indigo-700 active:scale-95 transition-all flex items-center justify-center gap-1.5 md:gap-2">
+                      <Download size={14} className="md:w-4 md:h-4"/>
+                      <span>下载水单</span>
+                    </button>
+                  </div>
+                  <div className="bg-white rounded-2xl md:rounded-[2.5rem] border shadow-sm overflow-hidden overflow-x-auto custom-scroll">
+                    <table className="w-full text-left min-w-full md:min-w-[700px]">
+                      <thead className="bg-slate-50 text-[9px] md:text-[10px] font-black text-slate-400 uppercase border-b"><tr className="border-b"><th className="px-0.5 md:px-6 py-2 md:py-5">单号</th><th className="px-0.5 md:px-6 py-2 md:py-5">分类</th><th className="px-0.5 md:px-6 py-2 md:py-5">姓名</th><th className="px-0.5 md:px-6 py-2 md:py-5">金额</th><th className="px-0.5 md:px-6 py-2 md:py-5">时间</th><th className="px-0.5 md:px-6 py-2 md:py-5 text-right">操作</th></tr></thead>
+                      <tbody className="divide-y text-[10px] md:text-sm">
+                        {filteredTransactions.map(t=>(
+                          <tr key={t.id} className="hover:bg-slate-50/50 transition-colors">
+                            <td className="px-0.5 md:px-6 py-1.5 md:py-5 font-mono text-[8px] md:text-[9px] text-slate-300 uppercase">{t.id.slice(-6)}</td>
+                            <td className="px-0.5 md:px-6 py-1.5 md:py-5">
+                              <span className={`text-[7px] md:text-[8px] font-black px-1 md:px-1.5 py-0.5 rounded uppercase ${t.type==='recharge'?'bg-blue-100 text-blue-700':(t.paymentMethod==='balance'?'bg-amber-100 text-amber-700':t.paymentMethod==='promotion_card'?'bg-purple-100 text-purple-700':'bg-indigo-100 text-indigo-700')}`}>
+                                {t.type==='recharge'?`充值(${getPaymentMethodText(t.paymentMethod)})`:(t.paymentMethod==='balance'?'卡耗':t.paymentMethod==='promotion_card'?`活动卡(${t.promotionName || '未知'})`:`实收(${getPaymentMethodText(t.paymentMethod)})`)}
+                              </span>
+                            </td>
+                            <td className="px-0.5 md:px-6 py-1.5 md:py-5 font-bold text-[9px] md:text-xs text-slate-800 truncate max-w-[50px] md:max-w-none">{t.customerName || '未知客户'}</td>
+                            <td className={`px-0.5 md:px-6 py-1.5 md:py-5 font-black text-[9px] md:text-sm ${t.type==='recharge'?'text-green-600':'text-slate-900'}`}>¥{(t.amount || 0).toLocaleString()}</td>
+                            <td className="px-0.5 md:px-6 py-1.5 md:py-5 text-[8px] md:text-[10px] text-slate-400 font-bold whitespace-nowrap">{new Date(t.timestamp).toLocaleString().slice(5,16)}</td>
+                            <td className="px-0.5 md:px-6 py-1.5 md:py-5 text-right">
+                              <button onClick={() => handleDeleteTransaction(t.id)} className="p-1 md:p-2 text-slate-300 hover:text-red-500 transition-all">
+                                <Trash2 size={12} className="md:w-4 md:h-4" />
+                              </button>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+
+              {financeSubTab === 'reports' && (
+                <div className="space-y-4 md:space-y-6 animate-in fade-in">
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4 md:gap-6">
+                    <div className="bg-white p-6 rounded-2xl md:rounded-[2rem] border shadow-sm hover:shadow-md transition-all group cursor-pointer">
+                      <div className="w-12 h-12 bg-indigo-50 rounded-xl flex items-center justify-center text-indigo-600 mb-4 group-hover:scale-110 transition-transform">
+                        <Banknote size={24} />
+                      </div>
+                      <h3 className="text-lg font-black text-slate-800 mb-2">资金报表</h3>
+                      <p className="text-xs text-slate-500 font-medium leading-relaxed">详细的营业收入、支出、利润分析，支持按门店、项目、支付方式多维度统计。</p>
+                      <button className="mt-4 text-[10px] font-black text-indigo-600 uppercase tracking-widest flex items-center gap-1">查看报表 <ChevronRight size={12}/></button>
+                    </div>
+                    <div className="bg-white p-6 rounded-2xl md:rounded-[2rem] border shadow-sm hover:shadow-md transition-all group cursor-pointer">
+                      <div className="w-12 h-12 bg-purple-50 rounded-xl flex items-center justify-center text-purple-600 mb-4 group-hover:scale-110 transition-transform">
+                        <UserCheck size={24} />
+                      </div>
+                      <h3 className="text-lg font-black text-slate-800 mb-2">人事报表</h3>
+                      <p className="text-xs text-slate-500 font-medium leading-relaxed">员工考勤、业绩提成、服务时长统计，帮助您精准评估员工绩效。</p>
+                      <button className="mt-4 text-[10px] font-black text-purple-600 uppercase tracking-widest flex items-center gap-1">查看报表 <ChevronRight size={12}/></button>
+                    </div>
+                    <div className="bg-white p-6 rounded-2xl md:rounded-[2rem] border shadow-sm hover:shadow-md transition-all group cursor-pointer">
+                      <div className="w-12 h-12 bg-emerald-50 rounded-xl flex items-center justify-center text-emerald-600 mb-4 group-hover:scale-110 transition-transform">
+                        <Users size={24} />
+                      </div>
+                      <h3 className="text-lg font-black text-slate-800 mb-2">会员报表</h3>
+                      <p className="text-xs text-slate-500 font-medium leading-relaxed">新增会员、流失预警、会员消费频次及客单价分析，助力精准营销。</p>
+                      <button className="mt-4 text-[10px] font-black text-emerald-600 uppercase tracking-widest flex items-center gap-1">查看报表 <ChevronRight size={12}/></button>
+                    </div>
+                  </div>
+                  <div className="bg-slate-50 p-8 rounded-2xl md:rounded-[2rem] border border-dashed border-slate-200 text-center">
+                    <div className="w-16 h-16 bg-white rounded-full flex items-center justify-center mx-auto mb-4 shadow-sm">
+                      <Sparkles size={24} className="text-indigo-400" />
+                    </div>
+                    <h3 className="text-sm font-black text-slate-700 mb-2">高级报表库</h3>
+                    <p className="text-xs text-slate-500 max-w-md mx-auto">更多多维度分析报表正在开发中，敬请期待。如需定制特定报表，请联系系统管理员。</p>
+                  </div>
+                </div>
+              )}
             </div>
           )}
 
@@ -1293,7 +1681,9 @@ const App: React.FC = () => {
                 </button>
               </div>
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 md:gap-6">
-                {promotions.map(promo => (
+                {promotions.map(promo => {
+                  const memberCount = customerCards.filter(c => c.promotionId === promo.id).length;
+                  return (
                   <div key={promo.id} className="bg-white p-4 md:p-6 rounded-2xl md:rounded-[2rem] border shadow-sm hover:shadow-md transition-shadow relative overflow-hidden group">
                     <div className="absolute top-0 right-0 w-24 h-24 bg-gradient-to-br from-indigo-50 to-purple-50 rounded-bl-full -z-10 opacity-50"></div>
                     <div className="flex justify-between items-start mb-4">
@@ -1305,13 +1695,25 @@ const App: React.FC = () => {
                         {promo.discountRate * 10}折
                       </div>
                     </div>
-                    <div className="flex justify-end mt-4 pt-4 border-t border-slate-50">
+                    
+                    {(promo.startDate || promo.endDate) && (
+                      <div className="mb-4 text-[10px] text-slate-500 font-medium bg-slate-50 p-2 rounded-lg">
+                        <span className="font-bold text-slate-700">办理期限:</span><br/>
+                        {promo.startDate ? new Date(promo.startDate).toLocaleDateString() : '不限'} 至 {promo.endDate ? new Date(promo.endDate).toLocaleDateString() : '不限'}
+                      </div>
+                    )}
+
+                    <div className="flex justify-between items-center mt-4 pt-4 border-t border-slate-50">
+                      <button onClick={() => setSelectedPromoId(promo.id)} className="flex items-center gap-1.5 text-indigo-600 hover:text-indigo-700 transition-colors text-xs font-bold">
+                        <Users size={14} />
+                        <span>{memberCount} 位会员</span>
+                      </button>
                       <button onClick={() => handleDeletePromotion(promo.id)} className="text-slate-300 hover:text-red-500 transition-colors p-2">
                         <Trash2 size={16} />
                       </button>
                     </div>
                   </div>
-                ))}
+                )})}
                 {promotions.length === 0 && (
                   <div className="col-span-full py-12 text-center text-slate-400 font-bold text-sm">
                     暂无活动，点击右上角新建
@@ -1363,15 +1765,17 @@ const App: React.FC = () => {
         )}
       </main>
 
-      {(isModalOpen || revokingLog || selectedAppt) && (
+      {(isModalOpen || revokingLog || selectedAppt || confirmReminderId || selectedPromoId) && (
         <div className="fixed inset-0 z-[200] flex items-end md:items-center justify-center p-0 md:p-4 animate-in fade-in duration-200">
           <div className="absolute inset-0 bg-slate-950/70 backdrop-blur-sm" onClick={() => { 
-            if(!revokingLog && !isModalOpen?.startsWith('consume_')) { 
+            if(!revokingLog && !isModalOpen?.startsWith('consume_') && !confirmReminderId) { 
               setIsModalOpen(null); 
               setEditingTarget(null); 
             } 
             setSelectedAppt(null); 
+            setSelectedPromoId(null);
             setIsVoidingAppt(false);
+            setConfirmReminderId(null);
           }}></div>
           <div onClick={(e) => e.stopPropagation()} className="relative z-10 bg-white w-full max-w-lg rounded-t-[2rem] md:rounded-[3rem] p-5 md:p-10 shadow-2xl overflow-y-auto max-h-[90vh] custom-scroll animate-in slide-in-from-bottom-10 md:zoom-in-95 text-slate-900">
             <button 
@@ -1380,12 +1784,116 @@ const App: React.FC = () => {
                 setEditingTarget(null); 
                 setSelectedAppt(null); 
                 setIsVoidingAppt(false);
+                setConfirmReminderId(null);
+                setSelectedPromoId(null);
               }} 
               className="absolute top-4 right-4 md:top-6 md:right-6 p-2 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-full transition-all z-20"
             >
               <X size={20} />
             </button>
             
+            {selectedPromoId && (
+              <div className="space-y-6">
+                <div className="flex justify-between items-center border-b pb-4">
+                  <h3 className="text-xl font-black text-slate-800">活动卡会员列表</h3>
+                </div>
+                <div className="max-h-[60vh] overflow-y-auto custom-scroll pr-2 space-y-3">
+                  {(() => {
+                    const promoCards = customerCards.filter(c => c.promotionId === selectedPromoId);
+                    if (promoCards.length === 0) {
+                      return <div className="text-center py-8 text-slate-400 font-bold text-sm">暂无会员办理此卡</div>;
+                    }
+
+                    // 按会员分组
+                    const groupedCards = promoCards.reduce((acc, card) => {
+                      if (!acc[card.customerId]) acc[card.customerId] = [];
+                      acc[card.customerId].push(card);
+                      return acc;
+                    }, {} as Record<string, CustomerCard[]>);
+
+                    return Object.entries(groupedCards).map(([customerId, cardsArray]) => {
+                      const cards = cardsArray as CustomerCard[];
+                      const cust = customers.find(c => c.id === customerId);
+                      const promo = promotions.find(p => p.id === selectedPromoId);
+                      
+                      // 该会员在该活动下的所有充值记录
+                      const rechargeTrans = transactions.filter(t => 
+                        t.type === 'recharge' && 
+                        t.customerId === customerId && 
+                        (cards.some(c => c.id === t.customerCardId) || (promo && t.itemName?.includes(promo.name)))
+                      );
+                      const totalRecharge = rechargeTrans.reduce((sum, t) => sum + (t.amount || 0), 0);
+                      const totalBalance = cards.reduce((sum, c) => sum + c.balance, 0);
+
+                      return (
+                        <div key={customerId} className="bg-slate-50 p-4 rounded-2xl border border-slate-100 flex flex-col gap-3">
+                          <div className="flex justify-between items-center border-b border-slate-200 pb-2">
+                            <span className="font-black text-slate-800 text-sm">{cust?.name || '未知会员'}</span>
+                            <div className="text-xs text-right">
+                              <div className="text-slate-500 font-medium">累计充值: <span className="font-bold text-indigo-600">¥{totalRecharge.toLocaleString()}</span></div>
+                              <div className="text-slate-500 font-medium mt-0.5">总余额: <span className="font-bold text-emerald-600">¥{totalBalance.toLocaleString()}</span></div>
+                            </div>
+                          </div>
+                          
+                          <div className="space-y-2">
+                            {cards.map((card) => {
+                              // 查找该次办卡对应的充值记录（通过 cardId 或 时间相近匹配）
+                              const cardTrans = rechargeTrans.filter(t => 
+                                t.customerCardId === card.id || 
+                                (promo && t.itemName?.includes(promo.name) && Math.abs(new Date(t.timestamp).getTime() - new Date(card.createdAt).getTime()) < 60000)
+                              );
+                              const cardRecharge = cardTrans.reduce((sum, t) => sum + (t.amount || 0), 0);
+                              
+                              return (
+                                <div key={card.id} className="flex justify-between items-center text-[10px] md:text-xs bg-white p-2.5 rounded-xl border border-slate-100 shadow-sm">
+                                  <span className="text-slate-400 font-bold">{new Date(card.createdAt).toLocaleDateString()}</span>
+                                  <div className="flex gap-3 md:gap-4">
+                                    <span className="text-slate-500">单次充值: <span className="font-bold text-indigo-500">¥{cardRecharge > 0 ? cardRecharge.toLocaleString() : '-'}</span></span>
+                                    <span className="text-slate-500">余额: <span className="font-bold text-emerald-500">¥{card.balance.toLocaleString()}</span></span>
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      );
+                    });
+                  })()}
+                </div>
+              </div>
+            )}
+
+            {confirmReminderId && (
+              <div className="space-y-6">
+                <div className="text-center space-y-2">
+                  <div className="mx-auto w-12 h-12 bg-amber-100 text-amber-600 rounded-full flex items-center justify-center mb-4">
+                    <Gift className="w-6 h-6" />
+                  </div>
+                  <h3 className="text-xl font-semibold text-slate-900">确认已提醒？</h3>
+                  <p className="text-slate-500 text-sm">
+                    确认后，该生日提醒将被标记为已处理，不再显示在提醒列表中。
+                  </p>
+                </div>
+                <div className="flex gap-3 pt-4">
+                  <button
+                    onClick={() => setConfirmReminderId(null)}
+                    className="flex-1 px-4 py-3 border border-slate-200 text-slate-700 rounded-2xl hover:bg-slate-50 font-medium transition-colors"
+                  >
+                    取消
+                  </button>
+                  <button
+                    onClick={() => {
+                      setReminders(reminders.map(r => r.id === confirmReminderId ? { ...r, status: 'completed' } : r));
+                      setConfirmReminderId(null);
+                    }}
+                    className="flex-1 px-4 py-3 bg-amber-500 text-white rounded-2xl hover:bg-amber-600 font-medium transition-colors shadow-sm shadow-amber-500/20"
+                  >
+                    确认已提醒
+                  </button>
+                </div>
+              </div>
+            )}
+
             {/* 员工新增/编辑弹窗 */}
             {(isModalOpen === 'new_staff' || isModalOpen === 'edit_staff') && (
               <div className="space-y-4 md:space-y-6">
@@ -1426,6 +1934,16 @@ const App: React.FC = () => {
                   <div className="space-y-1">
                     <label className="text-[9px] font-black text-slate-400 uppercase ml-2">折扣率 (0-1之间) *</label>
                     <input type="number" step="0.01" min="0.01" max="1" value={formState.promoDiscount} onChange={e=>setFormState({...formState, promoDiscount: e.target.value})} placeholder="0.8 代表 8折" className="w-full p-3 md:p-4 bg-slate-50 rounded-xl md:rounded-2xl font-bold text-xs md:text-sm outline-none border-2 border-transparent focus:border-indigo-400 text-slate-900" />
+                  </div>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="space-y-1">
+                      <label className="text-[9px] font-black text-slate-400 uppercase ml-2">开始时间 (选填)</label>
+                      <input type="date" value={formState.promoStartDate} onChange={e=>setFormState({...formState, promoStartDate: e.target.value})} className="w-full p-3 md:p-4 bg-slate-50 rounded-xl md:rounded-2xl font-bold text-xs md:text-sm outline-none border-2 border-transparent focus:border-indigo-400 text-slate-900" />
+                    </div>
+                    <div className="space-y-1">
+                      <label className="text-[9px] font-black text-slate-400 uppercase ml-2">结束时间 (选填)</label>
+                      <input type="date" value={formState.promoEndDate} onChange={e=>setFormState({...formState, promoEndDate: e.target.value})} className="w-full p-3 md:p-4 bg-slate-50 rounded-xl md:rounded-2xl font-bold text-xs md:text-sm outline-none border-2 border-transparent focus:border-indigo-400 text-slate-900" />
+                    </div>
                   </div>
                 </div>
                 <button onClick={handleAddPromotion} className="w-full py-3 md:py-4 bg-indigo-600 text-white rounded-xl md:rounded-2xl font-black text-[10px] md:text-xs uppercase shadow-lg tracking-widest active:scale-95 transition-all">创建活动</button>
@@ -1534,7 +2052,7 @@ const App: React.FC = () => {
                       <label className="text-[9px] font-black text-slate-400 uppercase ml-2">专属客服</label>
                       <select value={formState.custAssignedStaffId} onChange={e=>setFormState({...formState, custAssignedStaffId: e.target.value})} className="w-full p-3 md:p-4 bg-slate-50 rounded-xl md:rounded-2xl font-bold text-xs md:text-sm outline-none border-2 border-transparent focus:border-indigo-400 text-slate-900">
                         <option value="">未分配</option>
-                        {staff.map(s => <option key={s.id} value={s.id}>{s.name} ({s.role})</option>)}
+                        {staff.filter(s => s.id !== '1').map(s => <option key={s.id} value={s.id}>{s.name} ({s.role})</option>)}
                       </select>
                     </div>
                   </div>
@@ -1708,6 +2226,9 @@ const App: React.FC = () => {
                                       {t.staffId && (
                                         <span className="text-[8px] md:text-[9px] bg-slate-50 text-slate-400 px-1.5 py-0.5 rounded font-bold">服务: {staff.find(s => s.id === t.staffId)?.name || '未知'}</span>
                                       )}
+                                      <span className={`text-[7px] md:text-[8px] font-black px-1 md:px-1.5 py-0.5 rounded uppercase ${t.type==='recharge'?'bg-blue-100 text-blue-700':(t.paymentMethod==='balance'?'bg-amber-100 text-amber-700':t.paymentMethod==='promotion_card'?'bg-purple-100 text-purple-700':'bg-indigo-100 text-indigo-700')}`}>
+                                        {t.type==='recharge'?`充值(${getPaymentMethodText(t.paymentMethod)})`:(t.paymentMethod==='balance'?'卡耗':t.paymentMethod==='promotion_card'?`活动卡(${t.promotionName || '未知'})`:`实收(${getPaymentMethodText(t.paymentMethod)})`)}
+                                      </span>
                                     </div>
                                   </div>
                                  <div className="text-right shrink-0">
@@ -1847,9 +2368,24 @@ const App: React.FC = () => {
                         <button onClick={()=>handleConsume(custId, formState.amount, formState.itemName, 'alipay', apptId)} className="flex-1 py-3 md:py-4 bg-blue-600 text-white rounded-xl md:rounded-2xl font-black text-[10px] md:text-xs uppercase shadow-lg active:scale-95 transition-all">支付宝</button>
                         <button onClick={()=>handleConsume(custId, formState.amount, formState.itemName, 'meituan', apptId)} className="flex-1 py-3 md:py-4 bg-orange-500 text-white rounded-xl md:rounded-2xl font-black text-[10px] md:text-xs uppercase shadow-lg active:scale-95 transition-all">美团</button>
                      </div>
-                     {formState.cardId && (
-                       <button onClick={()=>handleConsume(custId, formState.amount, formState.itemName, 'promotion_card', apptId, formState.cardId)} disabled={isInsufficient && amount > 0} className={`w-full py-3 md:py-4 rounded-xl md:rounded-2xl font-black text-[10px] md:text-xs uppercase shadow-lg transition-all ${isInsufficient && amount > 0 ? 'bg-slate-200 text-slate-400 cursor-not-allowed shadow-none' : 'bg-purple-600 text-white shadow-purple-200 active:scale-95'}`}>活动卡划扣</button>
-                     )}
+                     <button 
+                       onClick={() => {
+                         const availableCards = getAvailableCards(custId);
+                         if (availableCards.length === 0) {
+                           alert('没有活动卡，扣费失败，重新选择扣费方式');
+                           return;
+                         }
+                         if (!formState.cardId) {
+                           alert('请先在上方选择要使用的活动卡');
+                           return;
+                         }
+                         handleConsume(custId, formState.amount, formState.itemName, 'promotion_card', apptId, formState.cardId);
+                       }} 
+                       disabled={isInsufficient && amount > 0 && !!formState.cardId} 
+                       className={`w-full py-3 md:py-4 rounded-xl md:rounded-2xl font-black text-[10px] md:text-xs uppercase shadow-lg transition-all ${isInsufficient && amount > 0 && formState.cardId ? 'bg-slate-200 text-slate-400 cursor-not-allowed shadow-none' : 'bg-purple-600 text-white shadow-purple-200 active:scale-95'}`}
+                     >
+                       活动卡划扣
+                     </button>
                   </div>
                </div>
                );
@@ -1912,6 +2448,10 @@ const App: React.FC = () => {
                         )}
                       </div>
                     )}
+                    <div className="space-y-1">
+                      <label className="text-[9px] font-black text-slate-400 uppercase ml-2">预约日期 *</label>
+                      <input type="date" value={formState.apptDate} onChange={e=>setFormState({...formState, apptDate: e.target.value})} className="w-full p-3 md:p-4 bg-slate-50 rounded-xl md:rounded-2xl font-bold text-xs md:text-sm outline-none border-2 border-transparent focus:border-indigo-400 text-slate-900" />
+                    </div>
                     <div className="grid grid-cols-2 gap-3 md:gap-4">
                       <div className="space-y-1">
                         <label className="text-[9px] font-black text-slate-400 uppercase ml-2">开始时间 *</label>
@@ -1951,13 +2491,13 @@ const App: React.FC = () => {
                       if(!formState.custName || !formState.custPhone) return alert('请补全会员资料');
                       finalCustId=`C-${Date.now()}`; finalCustName=formState.custName;
                       setCustomers(prev=>[...prev,{id:finalCustId, name:finalCustName, phone:formState.custPhone, balance:0, remarks:'极速录入', createdAt:new Date().toISOString()}]);
-                      if(parseFloat(formState.amount)>0) handleRecharge(finalCustId, formState.amount);
+                      if(parseFloat(formState.amount)>0) handleRecharge(finalCustId, formState.amount, 'cash', finalCustName);
                     }
                     const startH = parseInt(formState.apptStartTime);
                     const endH = parseInt(formState.apptEndTime);
                     if(finalCustId && formState.apptStaffId && formState.apptProject && endH > startH){
-                      const apptDateTime = new Date(formState.apptDate);
-                      apptDateTime.setHours(startH);
+                      const [y, m, d] = formState.apptDate.split('-').map(Number);
+                      const apptDateTime = new Date(y, m - 1, d, startH);
                       setAppointments(prev=>[...prev,{id:`APT-${Date.now()}`, customerId:finalCustId, customerName:finalCustName, staffId:formState.apptStaffId, projectName:formState.apptProject, startTime:apptDateTime.toISOString(), startHour:startH, duration: endH - startH, status:'pending', note: formState.apptNote}]);
                       setIsModalOpen(null); addLog('新增预约', finalCustName);
                     } else {
