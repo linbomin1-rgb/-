@@ -721,14 +721,16 @@ const App: React.FC = () => {
 
   const handleRevokeConfirm = () => {
     if (!revokingLog || !revokingLog.undoData) return;
-    const { type, targetId, secondaryId, amount, prevStatus, paymentMethod, customerCardId } = revokingLog.undoData;
+    const { type, targetId, secondaryId, amount: amountRaw, prevStatus, paymentMethod, customerCardId } = revokingLog.undoData;
+    const amount = parseFloat(amountRaw as any) || 0;
+    
     if (type === 'recharge') {
       setTransactions(prev => prev.filter(t => t.id !== targetId));
-      if (secondaryId) setCustomers(prev => prev.map(c => c.id === secondaryId ? { ...c, balance: Math.max(0, c.balance - (amount || 0)) } : c));
+      if (secondaryId) setCustomers(prev => prev.map(c => c.id === secondaryId ? { ...c, balance: Math.max(0, c.balance - amount) } : c));
     } else if (type === 'consume') {
       setTransactions(prev => prev.filter(t => t.id !== targetId));
-      if (secondaryId && paymentMethod === 'balance') setCustomers(prev => prev.map(c => c.id === secondaryId ? { ...c, balance: c.balance + (amount || 0) } : c));
-      if (customerCardId && paymentMethod === 'promotion_card') setCustomerCards(prev => prev.map(c => c.id === customerCardId ? { ...c, balance: c.balance + (amount || 0) } : c));
+      if (secondaryId && paymentMethod === 'balance') setCustomers(prev => prev.map(c => c.id === secondaryId ? { ...c, balance: c.balance + amount } : c));
+      if (customerCardId && paymentMethod === 'promotion_card') setCustomerCards(prev => prev.map(c => c.id === customerCardId ? { ...c, balance: c.balance + amount } : c));
       if (prevStatus) setAppointments(prev => prev.map(a => a.id === prevStatus ? { ...a, status: 'confirmed' } : a));
     } else if (type === 'add_customer_card') {
       setCustomerCards(prev => prev.filter(c => c.id !== targetId));
@@ -1423,7 +1425,7 @@ const App: React.FC = () => {
                   <thead className="bg-slate-50 text-[10px] font-black text-slate-400 uppercase tracking-widest border-b"><tr className="border-b"><th className="px-4 md:px-8 py-3 md:py-5">客户姓名</th><th className="px-4 md:px-8 py-3 md:py-5">联系手机</th><th className="px-4 md:px-8 py-3 md:py-5">卡内余额</th><th className="px-4 md:px-8 py-3 md:py-5">会员备注</th><th className="px-4 md:px-8 py-3 md:py-5 text-right hidden md:table-cell">档案管理</th></tr></thead>
                   <tbody className="divide-y text-xs md:text-sm">
                     {customers.filter(c=>(c.name||'').toLowerCase().includes(searchTerm.toLowerCase())||(c.phone||'').includes(searchTerm)).map(c=>(
-                      <tr key={c.id} className="hover:bg-slate-50/50 transition-colors cursor-pointer md:cursor-default" onClick={() => { if (window.innerWidth < 768) setIsModalOpen(`customer_actions_${c.id}`); }}>
+                      <tr key={c.id} className="hover:bg-slate-50/50 transition-colors cursor-pointer md:cursor-default" onClick={() => { if (window.innerWidth < 768) setIsModalOpen(`customer_profile_${c.id}`); }}>
                         <td className="px-4 md:px-8 py-3 md:py-5 font-bold text-slate-800">{c.name || '未命名'}</td>
                         <td className="px-4 md:px-8 py-3 md:py-5 font-bold text-slate-500 tracking-wider italic">{c.phone || '无号码'}</td>
                         <td className="px-4 md:px-8 py-3 md:py-5 font-black text-indigo-600">¥{(c.balance || 0).toLocaleString()}</td>
@@ -1777,7 +1779,7 @@ const App: React.FC = () => {
             setIsVoidingAppt(false);
             setConfirmReminderId(null);
           }}></div>
-          <div onClick={(e) => e.stopPropagation()} className="relative z-10 bg-white w-full max-w-lg rounded-t-[2rem] md:rounded-[3rem] p-5 md:p-10 shadow-2xl overflow-y-auto max-h-[90vh] custom-scroll animate-in slide-in-from-bottom-10 md:zoom-in-95 text-slate-900">
+          <div onClick={(e) => e.stopPropagation()} className="relative z-10 bg-white w-full max-w-lg h-full md:h-auto md:max-h-[90vh] rounded-none md:rounded-[3rem] p-5 md:p-10 shadow-2xl overflow-y-auto custom-scroll animate-in slide-in-from-bottom-10 md:zoom-in-95 text-slate-900">
             <button 
               onClick={() => { 
                 setIsModalOpen(null); 
@@ -1787,15 +1789,32 @@ const App: React.FC = () => {
                 setConfirmReminderId(null);
                 setSelectedPromoId(null);
               }} 
-              className="absolute top-4 right-4 md:top-6 md:right-6 p-2 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-full transition-all z-20"
+              className="absolute top-4 left-4 md:top-6 md:right-6 md:left-auto p-2 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-full transition-all z-20"
             >
-              <X size={20} />
+              <div className="md:hidden flex items-center gap-1 text-slate-600 font-bold">
+                <ChevronLeft size={20} />
+                <span className="text-sm">返回</span>
+              </div>
+              <div className="hidden md:block">
+                <X size={20} />
+              </div>
             </button>
+            <div className="md:hidden h-8"></div> {/* Spacer for back button on mobile */}
             
             {selectedPromoId && (
               <div className="space-y-6">
-                <div className="flex justify-between items-center border-b pb-4">
+                <div className="flex flex-col md:flex-row md:justify-between md:items-center border-b pb-4 gap-4">
                   <h3 className="text-xl font-black text-slate-800">活动卡会员列表</h3>
+                  <div className="relative">
+                    <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
+                    <input 
+                      type="text" 
+                      placeholder="搜索会员姓名/手机号" 
+                      value={formState.promoMemberSearch || ''} 
+                      onChange={e => setFormState({...formState, promoMemberSearch: e.target.value})}
+                      className="w-full md:w-64 pl-10 pr-4 py-2 bg-slate-50 rounded-xl text-xs font-bold outline-none border-2 border-transparent focus:border-indigo-400"
+                    />
+                  </div>
                 </div>
                 <div className="max-h-[60vh] overflow-y-auto custom-scroll pr-2 space-y-3">
                   {(() => {
@@ -1811,7 +1830,18 @@ const App: React.FC = () => {
                       return acc;
                     }, {} as Record<string, CustomerCard[]>);
 
-                    return Object.entries(groupedCards).map(([customerId, cardsArray]) => {
+                    const search = (formState.promoMemberSearch || '').toLowerCase();
+                    const filteredEntries = Object.entries(groupedCards).filter(([customerId]) => {
+                      if (!search) return true;
+                      const cust = customers.find(c => c.id === customerId);
+                      return cust?.name.toLowerCase().includes(search) || cust?.phone.includes(search);
+                    });
+
+                    if (filteredEntries.length === 0) {
+                      return <div className="text-center py-8 text-slate-400 font-bold text-sm">未找到匹配会员</div>;
+                    }
+
+                    return filteredEntries.map(([customerId, cardsArray]) => {
                       const cards = cardsArray as CustomerCard[];
                       const cust = customers.find(c => c.id === customerId);
                       const promo = promotions.find(p => p.id === selectedPromoId);
@@ -2161,9 +2191,18 @@ const App: React.FC = () => {
                   <div className="space-y-6 md:space-y-8">
                      <div className="flex justify-between items-start">
                         <div className="w-12 h-12 md:w-16 md:h-16 bg-indigo-50 rounded-xl md:rounded-2xl flex items-center justify-center text-indigo-600 text-xl md:text-2xl font-black shadow-inner">{cust.name[0]}</div>
-                        <button onClick={()=>setIsModalOpen(null)} className="p-2 md:p-3 bg-slate-50 rounded-lg md:rounded-xl text-slate-400 hover:text-red-500 transition-all active:scale-90"><X size={16} className="md:w-[18px] md:h-[18px]"/></button>
+                                                 <div className="flex gap-2">
+                            <button onClick={()=>{setEditingTarget(cust as any); setFormState({...formState, custName:cust.name, custPhone:cust.phone, custRemarks:cust.remarks, custGender:cust.gender||'female', custBirthday:cust.birthday||'', custSource:cust.source||'', custTags:(cust.tags||[]).join(', '), custAssignedStaffId: cust.assignedStaffId || '', amount:''}); setIsModalOpen('new_customer');}} className="hidden md:flex p-2 md:p-3 bg-slate-50 rounded-lg md:rounded-xl text-slate-400 hover:text-indigo-600 transition-all active:scale-90 items-center gap-2 font-bold text-xs"><Edit3 size={16}/> 编辑</button>
+                            <button onClick={()=>setIsModalOpen(null)} className="p-2 md:p-3 bg-slate-50 rounded-lg md:rounded-xl text-slate-400 hover:text-red-500 transition-all active:scale-90"><X size={16} className="md:w-[18px] md:h-[18px]"/></button>
+                         </div>
                      </div>
-                     <div><h3 className="text-xl md:text-2xl font-black text-slate-900 tracking-tight">{cust.name}</h3><p className="text-slate-400 font-bold mt-1 tracking-widest text-xs md:text-sm italic">{cust.phone}</p></div>
+                                           <div>
+                        <div className="flex items-center gap-3">
+                          <h3 className="text-xl md:text-2xl font-black text-slate-900 tracking-tight">{cust.name}</h3>
+                          <span className="px-2 py-0.5 bg-indigo-100 text-indigo-700 rounded-full text-[10px] font-black uppercase">余额: ¥{(cust.balance || 0).toLocaleString()}</span>
+                        </div>
+                        <p className="text-slate-400 font-bold mt-1 tracking-widest text-xs md:text-sm italic">{cust.phone}</p>
+                      </div>
                       
                       <div className="grid grid-cols-2 md:grid-cols-3 gap-3 md:gap-4">
                         <div className="bg-slate-50 p-3 rounded-xl">
@@ -2240,6 +2279,30 @@ const App: React.FC = () => {
                               </div>
                            )) : <p className="text-center py-6 md:py-8 text-slate-300 font-bold italic">暂无流水记录</p>}
                         </div>
+                     </div>
+
+                     {/* Mobile Bottom Menu */}
+                     <div className="md:hidden fixed bottom-0 left-0 right-0 bg-white border-t flex items-center justify-around py-3 px-2 z-30 shadow-[0_-4px_20px_rgba(0,0,0,0.1)]">
+                        <button onClick={()=>{setEditingTarget(cust as any); setFormState({...formState, custName:cust.name, custPhone:cust.phone, custRemarks:cust.remarks, custGender:cust.gender||'female', custBirthday:cust.birthday||'', custSource:cust.source||'', custTags:(cust.tags||[]).join(', '), custAssignedStaffId: cust.assignedStaffId || '', amount:''}); setIsModalOpen('new_customer');}} className="flex flex-col items-center gap-1 text-slate-500">
+                          <Edit3 size={18} />
+                          <span className="text-[9px] font-black uppercase">编辑</span>
+                        </button>
+                        <button onClick={() => {}} className="flex flex-col items-center gap-1 text-indigo-600">
+                          <HistoryIcon size={18} />
+                          <span className="text-[9px] font-black uppercase">档案</span>
+                        </button>
+                        <button onClick={()=>{setFormState({...formState, amount:'', itemName:'', note:''}); setIsModalOpen(`consume_${cust.id}`);}} className="flex flex-col items-center gap-1 text-slate-500">
+                          <ReceiptText size={18} />
+                          <span className="text-[9px] font-black uppercase">结算</span>
+                        </button>
+                        <button onClick={()=>{setFormState({...formState, amount:''}); setIsModalOpen(`recharge_${cust.id}`);}} className="flex flex-col items-center gap-1 text-slate-500">
+                          <Wallet size={18} />
+                          <span className="text-[9px] font-black uppercase">充值</span>
+                        </button>
+                        <button onClick={()=>{setFormState({...formState, cardPromoId:'', cardAmount:''}); setIsModalOpen(`add_card_${cust.id}`);}} className="flex flex-col items-center gap-1 text-slate-500">
+                          <Sparkles size={18} />
+                          <span className="text-[9px] font-black uppercase">办卡</span>
+                        </button>
                      </div>
                   </div>
                );
