@@ -51,7 +51,9 @@ export interface Appointment {
 export interface Promotion {
   id: string;
   name: string;
-  discountRate: number; // e.g., 0.8 for 80% (8折)
+  type?: 'discount' | 'count'; // 'discount' for discount recharge, 'count' for item count
+  discountRate?: number; // e.g., 0.8 for 80% (8折)
+  totalCount?: number; // For count cards
   startDate?: string;
   endDate?: string;
   createdAt: string;
@@ -61,7 +63,9 @@ export interface CustomerCard {
   id: string;
   customerId: string;
   promotionId: string;
-  balance: number;
+  balance?: number; // For discount cards
+  usedCount?: number; // For count cards
+  totalCount?: number; // Snapshot of total count at purchase time
   createdAt: string;
 }
 
@@ -78,6 +82,7 @@ export interface Transaction {
   itemName: string;
   staffId?: string;
   timestamp: string;
+  isRevoked?: boolean;
 }
 
 export interface SystemLog {

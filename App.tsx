@@ -199,7 +199,7 @@ const App: React.FC = () => {
     // 逻辑 B: 沉睡唤醒 (60天未消费)
     customers.forEach(c => {
       if (c.assignedStaffId === currentUser.id || currentUser.role === 'admin') {
-        const custTrans = transactions.filter(t => t.customerId === c.id && t.type === 'consume');
+        const custTrans = transactions.filter(t => t.customerId === c.id && t.type === 'consume' && !t.isRevoked);
         if (custTrans.length > 0) {
           const lastTransTime = Math.max(...custTrans.map(t => new Date(t.timestamp).getTime()));
           const lastTrans = new Date(lastTransTime);
@@ -246,12 +246,12 @@ const App: React.FC = () => {
   // --- 统计计算 ---
   const stats = useMemo(() => {
     const todayStr = new Date().toDateString();
-    const todayTrans = transactions.filter(t => new Date(t.timestamp).toDateString() === todayStr);
+    const todayTrans = transactions.filter(t => new Date(t.timestamp).toDateString() === todayStr && !t.isRevoked);
 
     const cashIncome = todayTrans.reduce((sum, t) => (t.type === 'consume' && t.paymentMethod !== 'balance' && t.paymentMethod !== 'promotion_card') ? sum + (t.amount || 0) : sum, 0);
     const rechargeIncome = todayTrans.reduce((sum, t) => t.type === 'recharge' ? sum + (t.amount || 0) : sum, 0);
     const consumption = todayTrans.reduce((sum, t) => t.type === 'consume' && (t.paymentMethod === 'balance' || t.paymentMethod === 'promotion_card') ? sum + (t.amount || 0) : sum, 0);
-    const monthlyRevenue = transactions.filter(t => new Date(t.timestamp).getMonth() === new Date().getMonth()).reduce((sum, t) => (t.type === 'recharge' || (t.type === 'consume' && t.paymentMethod !== 'balance' && t.paymentMethod !== 'promotion_card')) ? sum + (t.amount || 0) : sum, 0);
+    const monthlyRevenue = transactions.filter(t => new Date(t.timestamp).getMonth() === new Date().getMonth() && !t.isRevoked).reduce((sum, t) => (t.type === 'recharge' || (t.type === 'consume' && t.paymentMethod !== 'balance' && t.paymentMethod !== 'promotion_card')) ? sum + (t.amount || 0) : sum, 0);
 
     // 个人业绩计算
     const myTodayTrans = todayTrans.filter(t => t.staffId === currentUser?.id);
@@ -296,7 +296,7 @@ const App: React.FC = () => {
   const chartData = useMemo(() => {
     return Array.from({ length: 7 }, (_, i) => {
       const d = new Date(); d.setDate(d.getDate() - (6 - i));
-      const income = transactions.filter(t => t && new Date(t.timestamp).toDateString() === d.toDateString()).reduce((sum, t) => (t.type === 'recharge' || (t.type === 'consume' && t.paymentMethod !== 'balance' && t.paymentMethod !== 'promotion_card')) ? sum + (t.amount || 0) : sum, 0);
+      const income = transactions.filter(t => t && new Date(t.timestamp).toDateString() === d.toDateString() && !t.isRevoked).reduce((sum, t) => (t.type === 'recharge' || (t.type === 'consume' && t.paymentMethod !== 'balance' && t.paymentMethod !== 'promotion_card')) ? sum + (t.amount || 0) : sum, 0);
       return { name: `${d.getMonth() + 1}/${d.getDate()}`, income };
     });
   }, [transactions]);
@@ -344,6 +344,7 @@ const App: React.FC = () => {
     }
 
     const tList = transactions.filter(t => {
+      if (t.isRevoked) return false;
       const tDate = new Date(t.timestamp);
       return tDate >= sDate && tDate <= eDate;
     });
@@ -448,14 +449,25 @@ const App: React.FC = () => {
   // --- 逻辑函数 ---
   const getAvailableCards = (customerId: string) => {
     return customerCards
-      .filter(card => card.customerId === customerId && card.balance > 0)
+      .filter(card => {
+        if (card.customerId !== customerId) return false;
+        const promo = promotions.find(p => p.id === card.promotionId);
+        if (promo?.type === 'count') {
+          return (card.usedCount || 0) < (card.totalCount || 0);
+        }
+        return (card.balance || 0) > 0;
+      })
       .map(card => {
         const promo = promotions.find(p => p.id === card.promotionId);
+        const isCount = promo?.type === 'count';
         return {
           ...card,
           promotionName: promo?.name || '未知活动',
           discountRate: promo?.discountRate || 1,
-          displayText: `${promo?.name || '未知活动'} - 余额: ¥${card.balance} (${(promo?.discountRate || 1) * 10}折)`
+          type: promo?.type || 'discount',
+          displayText: isCount 
+            ? `${promo?.name || '未知活动'} - 剩余: ${(card.totalCount || 0) - (card.usedCount || 0)}次`
+            : `${promo?.name || '未知活动'} - 余额: ¥${card.balance} (${(promo?.discountRate || 1) * 10}折)`
         };
       });
   };
@@ -499,21 +511,34 @@ const App: React.FC = () => {
   };
 
   const handleAddPromotion = () => {
-    if (!formState.promoName || !formState.promoDiscount) return alert('请填写完整信息');
-    const discount = parseFloat(formState.promoDiscount);
-    if (isNaN(discount) || discount <= 0 || discount > 1) return alert('折扣必须是 0 到 1 之间的小数');
+    if (!formState.promoName) return alert('请填写活动名称');
+    const type = formState.promoType || 'discount';
+    let discount = 1;
+    let totalCount = 0;
+    
+    if (type === 'discount') {
+      if (!formState.promoDiscount) return alert('请填写折扣率');
+      discount = parseFloat(formState.promoDiscount);
+      if (isNaN(discount) || discount <= 0 || discount > 1) return alert('折扣必须是 0 到 1 之间的小数');
+    } else {
+      if (!formState.promoTotalCount) return alert('请填写总次数');
+      totalCount = parseInt(formState.promoTotalCount, 10);
+      if (isNaN(totalCount) || totalCount <= 0) return alert('总次数必须是大于0的整数');
+    }
     
     const newPromo: Promotion = {
       id: Date.now().toString(),
       name: formState.promoName,
-      discountRate: discount,
+      type: type,
+      discountRate: type === 'discount' ? discount : undefined,
+      totalCount: type === 'count' ? totalCount : undefined,
       startDate: formState.promoStartDate || undefined,
       endDate: formState.promoEndDate || undefined,
       createdAt: new Date().toISOString()
     };
     setPromotions([...promotions, newPromo]);
     addLog('创建活动', newPromo.name);
-    setFormState({...formState, promoName: '', promoDiscount: '', promoStartDate: '', promoEndDate: ''});
+    setFormState({...formState, promoName: '', promoType: 'discount', promoDiscount: '', promoTotalCount: '', promoStartDate: '', promoEndDate: ''});
     setIsModalOpen(null);
   };
 
@@ -550,7 +575,9 @@ const App: React.FC = () => {
       id: Date.now().toString(),
       customerId,
       promotionId: promo.id,
-      balance: amount,
+      balance: promo.type === 'count' ? undefined : amount,
+      usedCount: promo.type === 'count' ? 0 : undefined,
+      totalCount: promo.type === 'count' ? promo.totalCount : undefined,
       createdAt: new Date().toISOString()
     };
     
@@ -678,10 +705,18 @@ const App: React.FC = () => {
       if (!promo) return alert('未找到该活动规则');
       
       promoName = promo.name;
-      actualAmount = amount * promo.discountRate;
-      if (card.balance < actualAmount) { alert(`卡内余额不足，需要扣除 ${actualAmount.toFixed(2)}，当前余额 ${card.balance.toFixed(2)}`); return; }
-      
-      setCustomerCards(prev => prev.map(c => c.id === cardId ? { ...c, balance: c.balance - actualAmount } : c));
+      if (promo.type === 'count') {
+        // For count cards, amount represents the number of times to deduct
+        if ((card.usedCount || 0) + amount > (card.totalCount || 0)) {
+          alert(`剩余次数不足，需要扣除 ${amount} 次，当前剩余 ${(card.totalCount || 0) - (card.usedCount || 0)} 次`);
+          return;
+        }
+        setCustomerCards(prev => prev.map(c => c.id === cardId ? { ...c, usedCount: (c.usedCount || 0) + amount } : c));
+      } else {
+        actualAmount = amount * (promo.discountRate || 1);
+        if ((card.balance || 0) < actualAmount) { alert(`卡内余额不足，需要扣除 ${actualAmount.toFixed(2)}，当前余额 ${(card.balance || 0).toFixed(2)}`); return; }
+        setCustomerCards(prev => prev.map(c => c.id === cardId ? { ...c, balance: (c.balance || 0) - actualAmount } : c));
+      }
     }
 
     const transId = `TRX-${Date.now()}`;
@@ -714,9 +749,37 @@ const App: React.FC = () => {
   };
 
   const handleDeleteTransaction = (id: string) => {
-    if (!confirm('确定要作废这条流水记录吗？注意：此操作不会自动退回会员余额，如需退款请手动操作。')) return;
-    setTransactions(prev => prev.filter(t => t.id !== id));
-    addLog('作废流水', `单号: ${id.slice(-6)}`);
+    const t = transactions.find(tx => tx.id === id);
+    if (!t) return;
+    if (!confirm(`确定要撤销这条流水记录吗？\n单号: ${id.slice(-6)}\n金额: ¥${t.amount}\n\n注意：此操作将自动退回相应的会员余额或活动卡次数/余额。`)) return;
+    
+    // Reverse the transaction effects
+    if (t.type === 'recharge') {
+      if (t.customerCardId) {
+        setCustomerCards(prev => prev.filter(c => c.id !== t.customerCardId));
+      } else if (t.customerId) {
+        setCustomers(prev => prev.map(c => c.id === t.customerId ? { ...c, balance: Math.max(0, c.balance - t.amount) } : c));
+      }
+    } else if (t.type === 'consume') {
+      if (t.paymentMethod === 'balance' && t.customerId) {
+        setCustomers(prev => prev.map(c => c.id === t.customerId ? { ...c, balance: c.balance + t.amount } : c));
+      } else if (t.paymentMethod === 'promotion_card' && t.customerCardId) {
+        setCustomerCards(prev => prev.map(c => {
+          if (c.id === t.customerCardId) {
+            const promo = promotions.find(p => p.id === c.promotionId);
+            if (promo?.type === 'count') {
+              return { ...c, usedCount: Math.max(0, (c.usedCount || 0) - t.amount) };
+            } else {
+              return { ...c, balance: (c.balance || 0) + t.amount };
+            }
+          }
+          return c;
+        }));
+      }
+    }
+    
+    setTransactions(prev => prev.map(tx => tx.id === id ? { ...tx, isRevoked: true } : tx));
+    addLog('撤销流水', `单号: ${id.slice(-6)}`);
   };
 
   const handleRevokeConfirm = () => {
@@ -725,16 +788,26 @@ const App: React.FC = () => {
     const amount = parseFloat(amountRaw as any) || 0;
     
     if (type === 'recharge') {
-      setTransactions(prev => prev.filter(t => t.id !== targetId));
+      setTransactions(prev => prev.map(t => t.id === targetId ? { ...t, isRevoked: true } : t));
       if (secondaryId) setCustomers(prev => prev.map(c => c.id === secondaryId ? { ...c, balance: Math.max(0, c.balance - amount) } : c));
     } else if (type === 'consume') {
-      setTransactions(prev => prev.filter(t => t.id !== targetId));
+      setTransactions(prev => prev.map(t => t.id === targetId ? { ...t, isRevoked: true } : t));
       if (secondaryId && paymentMethod === 'balance') setCustomers(prev => prev.map(c => c.id === secondaryId ? { ...c, balance: c.balance + amount } : c));
-      if (customerCardId && paymentMethod === 'promotion_card') setCustomerCards(prev => prev.map(c => c.id === customerCardId ? { ...c, balance: c.balance + amount } : c));
+      if (customerCardId && paymentMethod === 'promotion_card') setCustomerCards(prev => prev.map(c => {
+        if (c.id === customerCardId) {
+          const promo = promotions.find(p => p.id === c.promotionId);
+          if (promo?.type === 'count') {
+            return { ...c, usedCount: Math.max(0, (c.usedCount || 0) - amount) };
+          } else {
+            return { ...c, balance: (c.balance || 0) + amount };
+          }
+        }
+        return c;
+      }));
       if (prevStatus) setAppointments(prev => prev.map(a => a.id === prevStatus ? { ...a, status: 'confirmed' } : a));
     } else if (type === 'add_customer_card') {
       setCustomerCards(prev => prev.filter(c => c.id !== targetId));
-      if (secondaryId) setTransactions(prev => prev.filter(t => t.id !== secondaryId)); // Remove the recharge transaction
+      if (secondaryId) setTransactions(prev => prev.map(t => t.id === secondaryId ? { ...t, isRevoked: true } : t)); // Mark the recharge transaction as revoked
     }
     setLogs(prev => prev.map(l => l.id === revokingLog.id ? { ...l, isRevoked: true } : l));
     addLog('撤销', revokingLog.action);
@@ -1607,23 +1680,29 @@ const App: React.FC = () => {
                   </div>
                   <div className="bg-white rounded-2xl md:rounded-[2.5rem] border shadow-sm overflow-hidden overflow-x-auto custom-scroll">
                     <table className="w-full text-left min-w-full md:min-w-[700px]">
-                      <thead className="bg-slate-50 text-[9px] md:text-[10px] font-black text-slate-400 uppercase border-b"><tr className="border-b"><th className="px-0.5 md:px-6 py-2 md:py-5">单号</th><th className="px-0.5 md:px-6 py-2 md:py-5">分类</th><th className="px-0.5 md:px-6 py-2 md:py-5">姓名</th><th className="px-0.5 md:px-6 py-2 md:py-5">金额</th><th className="px-0.5 md:px-6 py-2 md:py-5">时间</th><th className="px-0.5 md:px-6 py-2 md:py-5 text-right">操作</th></tr></thead>
+                      <thead className="bg-slate-50 text-[9px] md:text-[10px] font-black text-slate-400 uppercase border-b"><tr className="border-b"><th className="px-0.5 md:px-6 py-2 md:py-5">单号</th><th className="px-0.5 md:px-6 py-2 md:py-5">分类</th><th className="px-0.5 md:px-6 py-2 md:py-5">姓名</th><th className="px-0.5 md:px-6 py-2 md:py-5">金额</th><th className="px-0.5 md:px-6 py-2 md:py-5">操作人</th><th className="px-0.5 md:px-6 py-2 md:py-5">时间</th><th className="px-0.5 md:px-6 py-2 md:py-5 text-right">操作</th></tr></thead>
                       <tbody className="divide-y text-[10px] md:text-sm">
                         {filteredTransactions.map(t=>(
-                          <tr key={t.id} className="hover:bg-slate-50/50 transition-colors">
-                            <td className="px-0.5 md:px-6 py-1.5 md:py-5 font-mono text-[8px] md:text-[9px] text-slate-300 uppercase">{t.id.slice(-6)}</td>
+                          <tr key={t.id} className={`hover:bg-slate-50/50 transition-colors ${t.isRevoked ? 'opacity-50' : ''}`}>
+                            <td className="px-0.5 md:px-6 py-1.5 md:py-5 font-mono text-[8px] md:text-[9px] text-slate-300 uppercase">
+                              {t.id.slice(-6)}
+                              {t.isRevoked && <span className="ml-1 text-red-500 font-bold text-[8px]">已撤销</span>}
+                            </td>
                             <td className="px-0.5 md:px-6 py-1.5 md:py-5">
                               <span className={`text-[7px] md:text-[8px] font-black px-1 md:px-1.5 py-0.5 rounded uppercase ${t.type==='recharge'?'bg-blue-100 text-blue-700':(t.paymentMethod==='balance'?'bg-amber-100 text-amber-700':t.paymentMethod==='promotion_card'?'bg-purple-100 text-purple-700':'bg-indigo-100 text-indigo-700')}`}>
                                 {t.type==='recharge'?`充值(${getPaymentMethodText(t.paymentMethod)})`:(t.paymentMethod==='balance'?'卡耗':t.paymentMethod==='promotion_card'?`活动卡(${t.promotionName || '未知'})`:`实收(${getPaymentMethodText(t.paymentMethod)})`)}
                               </span>
                             </td>
-                            <td className="px-0.5 md:px-6 py-1.5 md:py-5 font-bold text-[9px] md:text-xs text-slate-800 truncate max-w-[50px] md:max-w-none">{t.customerName || '未知客户'}</td>
-                            <td className={`px-0.5 md:px-6 py-1.5 md:py-5 font-black text-[9px] md:text-sm ${t.type==='recharge'?'text-green-600':'text-slate-900'}`}>¥{(t.amount || 0).toLocaleString()}</td>
+                            <td className={`px-0.5 md:px-6 py-1.5 md:py-5 font-bold text-[9px] md:text-xs text-slate-800 truncate max-w-[50px] md:max-w-none ${t.isRevoked ? 'line-through' : ''}`}>{t.customerName || '未知客户'}</td>
+                            <td className={`px-0.5 md:px-6 py-1.5 md:py-5 font-black text-[9px] md:text-sm ${t.type==='recharge'?'text-green-600':'text-slate-900'} ${t.isRevoked ? 'line-through' : ''}`}>¥{(t.amount || 0).toLocaleString()}</td>
+                            <td className="px-0.5 md:px-6 py-1.5 md:py-5 font-bold text-[9px] md:text-xs text-slate-600">{staff.find(s => s.id === t.staffId)?.name || '未知'}</td>
                             <td className="px-0.5 md:px-6 py-1.5 md:py-5 text-[8px] md:text-[10px] text-slate-400 font-bold whitespace-nowrap">{new Date(t.timestamp).toLocaleString().slice(5,16)}</td>
                             <td className="px-0.5 md:px-6 py-1.5 md:py-5 text-right">
-                              <button onClick={() => handleDeleteTransaction(t.id)} className="p-1 md:p-2 text-slate-300 hover:text-red-500 transition-all">
-                                <Trash2 size={12} className="md:w-4 md:h-4" />
-                              </button>
+                              {!t.isRevoked && (
+                                <button onClick={() => handleDeleteTransaction(t.id)} className="p-1 md:p-2 text-slate-300 hover:text-amber-500 transition-all" title="撤销流水">
+                                  <Undo2 size={12} className="md:w-4 md:h-4" />
+                                </button>
+                              )}
                             </td>
                           </tr>
                         ))}
@@ -1693,8 +1772,8 @@ const App: React.FC = () => {
                         <h3 className="text-lg font-black text-slate-800">{promo.name}</h3>
                         <p className="text-[10px] text-slate-400 font-bold uppercase mt-1">创建于 {new Date(promo.createdAt).toLocaleDateString()}</p>
                       </div>
-                      <div className="bg-indigo-100 text-indigo-700 px-3 py-1 rounded-lg font-black text-xs">
-                        {promo.discountRate * 10}折
+                      <div className={`px-3 py-1 rounded-lg font-black text-xs ${promo.type === 'count' ? 'bg-amber-100 text-amber-700' : 'bg-indigo-100 text-indigo-700'}`}>
+                        {promo.type === 'count' ? `${promo.totalCount}次` : `${(promo.discountRate || 1) * 10}折`}
                       </div>
                     </div>
                     
@@ -1849,6 +1928,7 @@ const App: React.FC = () => {
                       // 该会员在该活动下的所有充值记录
                       const rechargeTrans = transactions.filter(t => 
                         t.type === 'recharge' && 
+                        !t.isRevoked &&
                         t.customerId === customerId && 
                         (cards.some(c => c.id === t.customerCardId) || (promo && t.itemName?.includes(promo.name)))
                       );
@@ -1962,9 +2042,24 @@ const App: React.FC = () => {
                     <input value={formState.promoName} onChange={e=>setFormState({...formState, promoName: e.target.value})} placeholder="活动名称" className="w-full p-3 md:p-4 bg-slate-50 rounded-xl md:rounded-2xl font-bold text-xs md:text-sm outline-none border-2 border-transparent focus:border-indigo-400 text-slate-900" />
                   </div>
                   <div className="space-y-1">
-                    <label className="text-[9px] font-black text-slate-400 uppercase ml-2">折扣率 (0-1之间) *</label>
-                    <input type="number" step="0.01" min="0.01" max="1" value={formState.promoDiscount} onChange={e=>setFormState({...formState, promoDiscount: e.target.value})} placeholder="0.8 代表 8折" className="w-full p-3 md:p-4 bg-slate-50 rounded-xl md:rounded-2xl font-bold text-xs md:text-sm outline-none border-2 border-transparent focus:border-indigo-400 text-slate-900" />
+                    <label className="text-[9px] font-black text-slate-400 uppercase ml-2">活动类型 *</label>
+                    <select value={formState.promoType || 'discount'} onChange={e=>setFormState({...formState, promoType: e.target.value})} className="w-full p-3 md:p-4 bg-slate-50 rounded-xl md:rounded-2xl font-bold text-xs md:text-sm outline-none border-2 border-transparent focus:border-indigo-400 text-slate-900">
+                      <option value="discount">折扣充值卡</option>
+                      <option value="count">自定义项目次卡</option>
+                    </select>
                   </div>
+                  {(!formState.promoType || formState.promoType === 'discount') && (
+                    <div className="space-y-1">
+                      <label className="text-[9px] font-black text-slate-400 uppercase ml-2">折扣率 (0-1之间) *</label>
+                      <input type="number" step="0.01" min="0.01" max="1" value={formState.promoDiscount} onChange={e=>setFormState({...formState, promoDiscount: e.target.value})} placeholder="0.8 代表 8折" className="w-full p-3 md:p-4 bg-slate-50 rounded-xl md:rounded-2xl font-bold text-xs md:text-sm outline-none border-2 border-transparent focus:border-indigo-400 text-slate-900" />
+                    </div>
+                  )}
+                  {formState.promoType === 'count' && (
+                    <div className="space-y-1">
+                      <label className="text-[9px] font-black text-slate-400 uppercase ml-2">总次数 *</label>
+                      <input type="number" min="1" step="1" value={formState.promoTotalCount || ''} onChange={e=>setFormState({...formState, promoTotalCount: e.target.value})} placeholder="输入总次数" className="w-full p-3 md:p-4 bg-slate-50 rounded-xl md:rounded-2xl font-bold text-xs md:text-sm outline-none border-2 border-transparent focus:border-indigo-400 text-slate-900" />
+                    </div>
+                  )}
                   <div className="grid grid-cols-2 gap-3">
                     <div className="space-y-1">
                       <label className="text-[9px] font-black text-slate-400 uppercase ml-2">开始时间 (选填)</label>
@@ -2103,11 +2198,13 @@ const App: React.FC = () => {
                     <label className="text-[9px] font-black text-slate-400 uppercase ml-2">选择活动 *</label>
                     <select value={formState.cardPromoId} onChange={e=>setFormState({...formState, cardPromoId: e.target.value})} className="w-full p-3 md:p-4 bg-slate-50 rounded-xl md:rounded-2xl font-bold text-xs md:text-sm outline-none border-2 border-transparent focus:border-indigo-400 text-slate-900">
                       <option value="">请选择活动...</option>
-                      {promotions.map(p => <option key={p.id} value={p.id}>{p.name} ({p.discountRate * 10}折)</option>)}
+                      {promotions.map(p => <option key={p.id} value={p.id}>{p.name} ({p.type === 'count' ? `${p.totalCount}次` : `${(p.discountRate || 1) * 10}折`})</option>)}
                     </select>
                   </div>
                   <div className="space-y-1">
-                    <label className="text-[9px] font-black text-slate-400 uppercase ml-2">充值金额 (¥) *</label>
+                    <label className="text-[9px] font-black text-slate-400 uppercase ml-2">
+                      {promotions.find(p => p.id === formState.cardPromoId)?.type === 'count' ? '购买金额 (¥) *' : '充值金额 (¥) *'}
+                    </label>
                     <input type="number" value={formState.cardAmount} onChange={e=>setFormState({...formState, cardAmount: e.target.value})} placeholder="0.00" className="w-full p-3 md:p-4 bg-indigo-50/50 rounded-xl md:rounded-2xl font-black text-indigo-600 border-2 border-transparent focus:border-indigo-400 outline-none" />
                   </div>
                 </div>
@@ -2234,32 +2331,47 @@ const App: React.FC = () => {
                        </div>
                      )}
 
-                     {getAvailableCards(custId).length > 0 && (
-                       <div className="space-y-3 md:space-y-4 pt-3 md:pt-4 border-t">
-                          <h4 className="font-black uppercase tracking-widest text-[9px] md:text-[10px] text-purple-600 flex items-center gap-2"><Sparkles size={12} className="md:w-3.5 md:h-3.5"/> 活动卡包 ({getAvailableCards(custId).length})</h4>
+                     <div className="space-y-3 md:space-y-4 pt-3 md:pt-4 border-t">
+                        <h4 className="font-black uppercase tracking-widest text-[9px] md:text-[10px] text-purple-600 flex items-center gap-2"><Sparkles size={12} className="md:w-3.5 md:h-3.5"/> 活动卡包 ({getAvailableCards(custId).length})</h4>
+                        {getAvailableCards(custId).length > 0 ? (
                           <div className="grid grid-cols-1 gap-2">
                              {getAvailableCards(custId).map(card => (
                                 <div key={card.id} className="p-3 md:p-4 bg-purple-50 border border-purple-100 rounded-xl md:rounded-2xl flex justify-between items-center text-[10px] md:text-xs">
                                    <div className="truncate pr-2">
                                      <p className="font-bold text-purple-900 truncate">{card.displayText.split(' - ')[0]}</p>
-                                     <p className="text-[9px] md:text-[10px] text-purple-500 font-bold mt-0.5">剩余: ¥{card.balance.toLocaleString()}</p>
+                                     <p className="text-[9px] md:text-[10px] text-purple-500 font-bold mt-0.5">
+                                       {card.type === 'count' 
+                                         ? `剩余: ${(card.totalCount || 0) - (card.usedCount || 0)}次 / 共${card.totalCount || 0}次` 
+                                         : `剩余: ¥${(card.balance || 0).toLocaleString()}`}
+                                     </p>
                                    </div>
                                    <div className="bg-purple-200 text-purple-800 px-2 py-1 rounded font-black text-[9px]">
-                                     {card.discountRate * 10}折
+                                     {card.type === 'count' ? '次卡' : `${(card.discountRate || 1) * 10}折`}
                                    </div>
                                 </div>
                              ))}
                           </div>
-                       </div>
-                     )}
+                        ) : (
+                          <div className="p-4 bg-slate-50 border border-slate-100 rounded-xl md:rounded-2xl flex flex-col items-center justify-center text-center">
+                            <Sparkles size={20} className="text-slate-300 mb-2" />
+                            <p className="text-[10px] md:text-xs font-bold text-slate-400">暂无活动卡</p>
+                            <button onClick={() => { setIsModalOpen(`add_card_${custId}`); setFormState({...formState, cardPromoId: '', cardAmount: ''}); }} className="mt-2 text-[9px] md:text-[10px] font-black text-indigo-600 uppercase tracking-widest hover:text-indigo-700 transition-colors">
+                              立即办理
+                            </button>
+                          </div>
+                        )}
+                     </div>
 
                      <div className="space-y-3 md:space-y-4 pt-3 md:pt-4 border-t">
                         <h4 className="font-black uppercase tracking-widest text-[9px] md:text-[10px] text-indigo-600 flex items-center gap-2"><HistoryIcon size={12} className="md:w-3.5 md:h-3.5"/> 消费轨迹 ({histTrans.length})</h4>
                         <div className="space-y-2 max-h-48 md:max-h-64 overflow-y-auto custom-scroll pr-1">
                            {histTrans.length > 0 ? histTrans.map(t=>(
-                              <div key={t.id} className="p-3 md:p-4 bg-white border border-slate-100 rounded-xl md:rounded-2xl flex justify-between items-center text-[10px] md:text-xs">
+                              <div key={t.id} className={`p-3 md:p-4 bg-white border border-slate-100 rounded-xl md:rounded-2xl flex justify-between items-center text-[10px] md:text-xs ${t.isRevoked ? 'opacity-50' : ''}`}>
                                  <div className="truncate pr-2">
-                                    <p className="font-bold text-slate-800 truncate">{t.itemName}</p>
+                                    <p className={`font-bold text-slate-800 truncate ${t.isRevoked ? 'line-through' : ''}`}>
+                                      {t.itemName}
+                                      {t.isRevoked && <span className="ml-2 text-[8px] text-red-500 bg-red-50 px-1 py-0.5 rounded">已撤销</span>}
+                                    </p>
                                     <div className="flex items-center gap-2 mt-0.5">
                                       <p className="text-[9px] md:text-[10px] text-slate-300 font-bold">{new Date(t.timestamp).toLocaleDateString()}</p>
                                       {t.staffId && (
@@ -2271,7 +2383,7 @@ const App: React.FC = () => {
                                     </div>
                                   </div>
                                  <div className="text-right shrink-0">
-                                   <p className={`font-black ${t.type==='recharge'?'text-green-600':'text-slate-900'}`}>{t.type==='recharge'?'+':'-'}¥{t.amount}</p>
+                                   <p className={`font-black ${t.isRevoked ? 'line-through text-slate-400' : (t.type==='recharge'?'text-green-600':'text-slate-900')}`}>{t.type==='recharge'?'+':'-'}¥{t.amount}</p>
                                    {t.paymentMethod === 'promotion_card' && t.originalAmount && (
                                      <p className="text-[8px] text-slate-400 line-through">原价: ¥{t.originalAmount}</p>
                                    )}
@@ -2314,13 +2426,20 @@ const App: React.FC = () => {
                const amount = parseFloat(formState.amount) || 0;
                let isInsufficient = amount > (customer?.balance || 0);
                let actualAmount = amount;
+               let isCountCard = false;
                
                if (formState.cardId) {
                  const card = customerCards.find(c => c.id === formState.cardId);
                  const promo = promotions.find(p => p.id === card?.promotionId);
                  if (card && promo) {
-                   actualAmount = amount * promo.discountRate;
-                   isInsufficient = actualAmount > card.balance;
+                   if (promo.type === 'count') {
+                     isCountCard = true;
+                     actualAmount = amount;
+                     isInsufficient = actualAmount > ((card.totalCount || 0) - (card.usedCount || 0));
+                   } else {
+                     actualAmount = amount * (promo.discountRate || 1);
+                     isInsufficient = actualAmount > (card.balance || 0);
+                   }
                  }
                }
                
@@ -2337,9 +2456,9 @@ const App: React.FC = () => {
                       <p className="text-base md:text-lg font-bold text-slate-800">{customer?.name}</p>
                     </div>
                     <div className="text-right">
-                      <p className="text-[9px] font-black uppercase text-slate-400 mb-1">{formState.cardId ? '活动卡余额' : '当前余额'}</p>
+                      <p className="text-[9px] font-black uppercase text-slate-400 mb-1">{formState.cardId ? (isCountCard ? '活动卡剩余次数' : '活动卡余额') : '当前余额'}</p>
                       <p className={`text-base md:text-lg font-black ${isInsufficient ? 'text-red-500' : 'text-indigo-600'}`}>
-                        ¥{formState.cardId ? (customerCards.find(c => c.id === formState.cardId)?.balance || 0).toLocaleString() : (customer?.balance || 0).toLocaleString()}
+                        {formState.cardId ? (isCountCard ? `${(customerCards.find(c => c.id === formState.cardId)?.totalCount || 0) - (customerCards.find(c => c.id === formState.cardId)?.usedCount || 0)}次` : `¥${(customerCards.find(c => c.id === formState.cardId)?.balance || 0).toLocaleString()}`) : `¥${(customer?.balance || 0).toLocaleString()}`}
                       </p>
                     </div>
                   </div>
@@ -2389,8 +2508,12 @@ const App: React.FC = () => {
                       <div className="flex items-start gap-2">
                         <AlertTriangle size={16} className="text-red-500 mt-0.5 shrink-0" />
                         <div className="flex-1">
-                          <p className="text-xs font-bold text-red-700">活动卡余额不足</p>
-                          <p className="text-[10px] text-red-500 mt-0.5">折后需要扣除 ¥{actualAmount.toFixed(2)}，但卡内余额仅剩 ¥{(customerCards.find(c => c.id === formState.cardId)?.balance || 0).toLocaleString()}。</p>
+                          <p className="text-xs font-bold text-red-700">{isCountCard ? '活动卡次数不足' : '活动卡余额不足'}</p>
+                          <p className="text-[10px] text-red-500 mt-0.5">
+                            {isCountCard 
+                              ? `需要扣除 ${actualAmount} 次，但卡内仅剩 ${(customerCards.find(c => c.id === formState.cardId)?.totalCount || 0) - (customerCards.find(c => c.id === formState.cardId)?.usedCount || 0)} 次。`
+                              : `折后需要扣除 ¥${actualAmount.toFixed(2)}，但卡内余额仅剩 ¥{(customerCards.find(c => c.id === formState.cardId)?.balance || 0).toLocaleString()}。`}
+                          </p>
                         </div>
                       </div>
                     </div>
@@ -2398,8 +2521,8 @@ const App: React.FC = () => {
 
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-3 md:gap-4">
                     <div className="space-y-1 text-left">
-                       <label className="text-[9px] font-black text-slate-400 uppercase ml-2">结算金额 (¥) *</label>
-                       <input value={formState.amount} onChange={e=>setFormState({...formState, amount: e.target.value})} type="number" placeholder="0.00" className={`w-full p-3 md:p-4 bg-slate-50 rounded-xl md:rounded-2xl font-black text-lg md:text-xl text-slate-900 outline-none border-2 transition-colors ${isInsufficient && amount > 0 ? 'border-red-300 focus:border-red-500' : 'border-transparent focus:border-indigo-400'}`} />
+                       <label className="text-[9px] font-black text-slate-400 uppercase ml-2">{isCountCard ? '扣除次数 *' : '结算金额 (¥) *'}</label>
+                       <input value={formState.amount} onChange={e=>setFormState({...formState, amount: e.target.value})} type="number" placeholder={isCountCard ? "1" : "0.00"} className={`w-full p-3 md:p-4 bg-slate-50 rounded-xl md:rounded-2xl font-black text-lg md:text-xl text-slate-900 outline-none border-2 transition-colors ${isInsufficient && amount > 0 ? 'border-red-300 focus:border-red-500' : 'border-transparent focus:border-indigo-400'}`} />
                     </div>
                     <div className="space-y-1 text-left">
                        <label className="text-[9px] font-black text-slate-400 uppercase ml-2">服务项目 *</label>
@@ -2422,33 +2545,27 @@ const App: React.FC = () => {
                     </div>
                   )}
                   <div className="flex flex-col gap-3 md:gap-4 pt-2 md:pt-4">
-                     <div className="flex gap-3 md:gap-4">
-                       <button onClick={()=>handleConsume(custId, formState.amount, formState.itemName, 'balance', apptId)} disabled={isInsufficient && amount > 0 && !formState.cardId} className={`flex-1 py-3 md:py-4 rounded-xl md:rounded-2xl font-black text-[10px] md:text-xs uppercase shadow-lg transition-all ${isInsufficient && amount > 0 && !formState.cardId ? 'bg-slate-200 text-slate-400 cursor-not-allowed shadow-none' : 'bg-indigo-600 text-white shadow-indigo-100 active:scale-95'}`}>余额核销</button>
-                       <button onClick={()=>handleConsume(custId, formState.amount, formState.itemName, 'cash', apptId)} className="flex-1 py-3 md:py-4 bg-slate-900 text-white rounded-xl md:rounded-2xl font-black text-[10px] md:text-xs uppercase shadow-lg active:scale-95 transition-all">现金收款</button>
-                      </div>
-                      <div className="flex gap-3 md:gap-4">
-                        <button onClick={()=>handleConsume(custId, formState.amount, formState.itemName, 'wechat', apptId)} className="flex-1 py-3 md:py-4 bg-green-600 text-white rounded-xl md:rounded-2xl font-black text-[10px] md:text-xs uppercase shadow-lg active:scale-95 transition-all">微信</button>
-                        <button onClick={()=>handleConsume(custId, formState.amount, formState.itemName, 'alipay', apptId)} className="flex-1 py-3 md:py-4 bg-blue-600 text-white rounded-xl md:rounded-2xl font-black text-[10px] md:text-xs uppercase shadow-lg active:scale-95 transition-all">支付宝</button>
-                        <button onClick={()=>handleConsume(custId, formState.amount, formState.itemName, 'meituan', apptId)} className="flex-1 py-3 md:py-4 bg-orange-500 text-white rounded-xl md:rounded-2xl font-black text-[10px] md:text-xs uppercase shadow-lg active:scale-95 transition-all">美团</button>
-                     </div>
-                     <button 
-                       onClick={() => {
-                         const availableCards = getAvailableCards(custId);
-                         if (availableCards.length === 0) {
-                           alert('没有活动卡，扣费失败，重新选择扣费方式');
-                           return;
-                         }
-                         if (!formState.cardId) {
-                           alert('请先在上方选择要使用的活动卡');
-                           return;
-                         }
-                         handleConsume(custId, formState.amount, formState.itemName, 'promotion_card', apptId, formState.cardId);
-                       }} 
-                       disabled={isInsufficient && amount > 0 && !!formState.cardId} 
-                       className={`w-full py-3 md:py-4 rounded-xl md:rounded-2xl font-black text-[10px] md:text-xs uppercase shadow-lg transition-all ${isInsufficient && amount > 0 && formState.cardId ? 'bg-slate-200 text-slate-400 cursor-not-allowed shadow-none' : 'bg-purple-600 text-white shadow-purple-200 active:scale-95'}`}
-                     >
-                       活动卡划扣
-                     </button>
+                    {formState.cardId ? (
+                      <button 
+                        onClick={() => handleConsume(custId, formState.amount, formState.itemName, 'promotion_card', apptId, formState.cardId)} 
+                        disabled={isInsufficient && amount > 0} 
+                        className={`w-full py-3 md:py-4 rounded-xl md:rounded-2xl font-black text-[10px] md:text-xs uppercase shadow-lg transition-all ${isInsufficient && amount > 0 ? 'bg-slate-200 text-slate-400 cursor-not-allowed shadow-none' : 'bg-purple-600 text-white shadow-purple-200 active:scale-95'}`}
+                      >
+                        活动卡划扣
+                      </button>
+                    ) : (
+                      <>
+                        <div className="flex gap-3 md:gap-4">
+                          <button onClick={()=>handleConsume(custId, formState.amount, formState.itemName, 'balance', apptId)} disabled={isInsufficient && amount > 0} className={`flex-1 py-3 md:py-4 rounded-xl md:rounded-2xl font-black text-[10px] md:text-xs uppercase shadow-lg transition-all ${isInsufficient && amount > 0 ? 'bg-slate-200 text-slate-400 cursor-not-allowed shadow-none' : 'bg-indigo-600 text-white shadow-indigo-100 active:scale-95'}`}>余额核销</button>
+                          <button onClick={()=>handleConsume(custId, formState.amount, formState.itemName, 'cash', apptId)} className="flex-1 py-3 md:py-4 bg-slate-900 text-white rounded-xl md:rounded-2xl font-black text-[10px] md:text-xs uppercase shadow-lg active:scale-95 transition-all">现金收款</button>
+                        </div>
+                        <div className="flex gap-3 md:gap-4">
+                          <button onClick={()=>handleConsume(custId, formState.amount, formState.itemName, 'wechat', apptId)} className="flex-1 py-3 md:py-4 bg-green-600 text-white rounded-xl md:rounded-2xl font-black text-[10px] md:text-xs uppercase shadow-lg active:scale-95 transition-all">微信</button>
+                          <button onClick={()=>handleConsume(custId, formState.amount, formState.itemName, 'alipay', apptId)} className="flex-1 py-3 md:py-4 bg-blue-600 text-white rounded-xl md:rounded-2xl font-black text-[10px] md:text-xs uppercase shadow-lg active:scale-95 transition-all">支付宝</button>
+                          <button onClick={()=>handleConsume(custId, formState.amount, formState.itemName, 'meituan', apptId)} className="flex-1 py-3 md:py-4 bg-orange-500 text-white rounded-xl md:rounded-2xl font-black text-[10px] md:text-xs uppercase shadow-lg active:scale-95 transition-all">美团</button>
+                        </div>
+                      </>
+                    )}
                   </div>
                </div>
                );
