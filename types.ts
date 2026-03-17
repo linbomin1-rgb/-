@@ -100,6 +100,7 @@ export interface SystemLog {
     originalAmount?: number;
     prevStatus?: string;   // 用于状态撤销
     paymentMethod?: string;
+    staffId?: string;
   };
   isRevoked?: boolean;
 }
