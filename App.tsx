@@ -1480,19 +1480,11 @@ const App: React.FC = () => {
                                     
                                     <div className="bg-white/60 rounded-lg p-2 border border-black/5">
                                       <div className="text-[10px] font-black text-slate-700 uppercase tracking-tight">{a.projectName}</div>
+                                      <div className="text-[8px] font-bold text-slate-400 uppercase mt-0.5">{a.duration}小时</div>
                                       {a.note && (
                                         <div className="text-[9px] text-slate-500 font-medium mt-1 line-clamp-2 italic leading-tight">
                                           "{a.note}"
                                         </div>
-                                      )}
-                                    </div>
-
-                                    <div className="mt-auto flex justify-between items-center">
-                                      <span className={`text-[8px] font-black uppercase px-2 py-0.5 rounded-full ${a.status==='pending'?'bg-amber-100 text-amber-700':a.status==='confirmed'?'bg-indigo-100 text-indigo-700':a.status==='completed'?'bg-emerald-100 text-emerald-700':'bg-slate-200 text-slate-600'}`}>
-                                        {a.status==='pending'?'待确认':a.status==='confirmed'?'已确认':a.status==='completed'?'已完成':'已取消'}
-                                      </span>
-                                      {a.duration > 1 && (
-                                        <span className="text-[8px] font-bold text-slate-400 uppercase">{a.duration}小时</span>
                                       )}
                                     </div>
                                   </div>
